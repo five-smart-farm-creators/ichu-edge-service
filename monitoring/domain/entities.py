@@ -1,0 +1,350 @@
+"""Domain entities for the Monitoring bounded context."""
+
+import uuid
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+
+from monitoring.domain.value_objects import (
+    ActivityIndex,
+    AlertSeverity,
+    AlertType,
+    BatteryLevel,
+    BodyTemperature,
+    Geofence,
+    GeoPosition,
+    RecordedAt,
+    SyncStatus,
+    TelemetryEventId,
+    Threshold,
+    canonical_device_identifier,
+)
+
+
+def _check_rejection(sync_status: SyncStatus, rejection_reason: str | None) -> None:
+    """Require a rejection reason exactly when a record was rejected by the cloud."""
+    if sync_status is SyncStatus.REJECTED:
+        if not isinstance(rejection_reason, str) or not rejection_reason.strip():
+            raise ValueError("Rejected records require a rejection reason")
+    elif rejection_reason is not None:
+        raise ValueError("Only rejected records carry a rejection reason")
+
+
+@dataclass(frozen=True)
+class SubmittingDevice:
+    """Monitoring's local representation of a device allowed to submit telemetry."""
+
+    device_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "device_id", canonical_device_identifier(self.device_id)
+        )
+
+
+@dataclass(frozen=True)
+class TelemetryReading:
+    """A valid immutable telemetry reading from one cattle band."""
+
+    reading_id: uuid.UUID
+    submitting_device: SubmittingDevice
+    event_id: TelemetryEventId
+    recorded_at: RecordedAt
+    timestamp_supplied: bool
+    body_temperature: BodyTemperature | None = None
+    activity_index: ActivityIndex | None = None
+    battery_level: BatteryLevel | None = None
+    position: GeoPosition | None = None
+    sync_status: SyncStatus = SyncStatus.PENDING
+    rejection_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reading_id, uuid.UUID):
+            raise TypeError("Reading identifier must be a UUID")
+        if not isinstance(self.submitting_device, SubmittingDevice):
+            raise TypeError("TelemetryReading requires a SubmittingDevice")
+        if not isinstance(self.event_id, TelemetryEventId):
+            raise TypeError("TelemetryReading requires a TelemetryEventId")
+        if not isinstance(self.recorded_at, RecordedAt):
+            raise TypeError("TelemetryReading requires a RecordedAt value")
+        if not isinstance(self.timestamp_supplied, bool):
+            raise TypeError("TelemetryReading timestamp_supplied must be a boolean")
+        if self.body_temperature is not None and not isinstance(
+            self.body_temperature, BodyTemperature
+        ):
+            raise TypeError("Body temperature must be a BodyTemperature value")
+        if self.activity_index is not None and not isinstance(
+            self.activity_index, ActivityIndex
+        ):
+            raise TypeError("Activity index must be an ActivityIndex value")
+        if self.battery_level is not None and not isinstance(
+            self.battery_level, BatteryLevel
+        ):
+            raise TypeError("Battery level must be a BatteryLevel value")
+        if self.position is not None and not isinstance(self.position, GeoPosition):
+            raise TypeError("Position must be a GeoPosition value")
+        if all(
+            measurement is None
+            for measurement in (
+                self.body_temperature,
+                self.activity_index,
+                self.battery_level,
+                self.position,
+            )
+        ):
+            raise ValueError("Telemetry reading requires at least one measurement")
+        if not isinstance(self.sync_status, SyncStatus):
+            raise TypeError("TelemetryReading sync status must be a SyncStatus")
+        _check_rejection(self.sync_status, self.rejection_reason)
+
+    @classmethod
+    def record(
+        cls,
+        submitting_device: SubmittingDevice,
+        event_id: str,
+        recorded_at: datetime | None,
+        body_temperature: float | None,
+        activity_index: float | None,
+        battery_level: float | None,
+        position: GeoPosition | None,
+    ) -> "TelemetryReading":
+        """Create a new pending reading, enforcing domain invariants."""
+        return cls(
+            uuid.uuid4(),
+            submitting_device,
+            TelemetryEventId(event_id),
+            RecordedAt.from_optional(recorded_at),
+            recorded_at is not None,
+            None if body_temperature is None else BodyTemperature(body_temperature),
+            None if activity_index is None else ActivityIndex(activity_index),
+            None if battery_level is None else BatteryLevel(battery_level),
+            position,
+        )
+
+    @classmethod
+    def reconstitute(
+        cls,
+        reading_id: uuid.UUID,
+        submitting_device: SubmittingDevice,
+        event_id: TelemetryEventId,
+        recorded_at: RecordedAt,
+        timestamp_supplied: bool,
+        body_temperature: BodyTemperature | None,
+        activity_index: ActivityIndex | None,
+        battery_level: BatteryLevel | None,
+        position: GeoPosition | None,
+        sync_status: SyncStatus,
+        rejection_reason: str | None,
+    ) -> "TelemetryReading":
+        """Rebuild a persisted reading with its stored synchronization state."""
+        return cls(
+            reading_id,
+            submitting_device,
+            event_id,
+            recorded_at,
+            timestamp_supplied,
+            body_temperature,
+            activity_index,
+            battery_level,
+            position,
+            sync_status,
+            rejection_reason,
+        )
+
+    @property
+    def device_id(self) -> str:
+        """Return the submitting device's identifier."""
+        return self.submitting_device.device_id
+
+    def mark_synced(self) -> "TelemetryReading":
+        """Return this reading as accepted or recognized by the cloud."""
+        return replace(self, sync_status=SyncStatus.SYNCED, rejection_reason=None)
+
+    def mark_rejected(self, reason: str) -> "TelemetryReading":
+        """Return this reading as rejected by the cloud, with the cloud's reason."""
+        return replace(self, sync_status=SyncStatus.REJECTED, rejection_reason=reason)
+
+    def same_telemetry_as(self, other: "TelemetryReading") -> bool:
+        """Return whether two submissions carry the same telemetry; time counts only when device-supplied."""
+        if self.timestamp_supplied != other.timestamp_supplied:
+            return False
+        if self.timestamp_supplied and self.recorded_at != other.recorded_at:
+            return False
+        return (
+            self.body_temperature,
+            self.activity_index,
+            self.battery_level,
+            self.position,
+        ) == (
+            other.body_temperature,
+            other.activity_index,
+            other.battery_level,
+            other.position,
+        )
+
+
+@dataclass(frozen=True)
+class MonitoringAlert:
+    """A local alert raised when a reading violates a cached rule."""
+
+    alert_id: uuid.UUID
+    device_id: str
+    type: AlertType
+    severity: AlertSeverity
+    reading_ids: tuple[uuid.UUID, ...]
+    configuration_revision: int
+    raised_at: datetime
+    threshold_min_value: float | None = None
+    threshold_max_value: float | None = None
+    geofence_id: uuid.UUID | None = None
+    distance_to_boundary_meters: float | None = None
+    sync_status: SyncStatus = SyncStatus.PENDING
+    rejection_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.alert_id, uuid.UUID):
+            raise TypeError("Alert identifier must be a UUID")
+        object.__setattr__(
+            self, "device_id", canonical_device_identifier(self.device_id)
+        )
+        if not isinstance(self.type, AlertType):
+            raise TypeError("Alert type must be an AlertType")
+        if not isinstance(self.severity, AlertSeverity):
+            raise TypeError("Alert severity must be an AlertSeverity")
+        reading_ids = tuple(self.reading_ids)
+        if not reading_ids or not all(isinstance(item, uuid.UUID) for item in reading_ids):
+            raise ValueError("Alert requires at least one reading identifier")
+        object.__setattr__(self, "reading_ids", reading_ids)
+        if (
+            isinstance(self.configuration_revision, bool)
+            or not isinstance(self.configuration_revision, int)
+            or self.configuration_revision < 0
+        ):
+            raise ValueError("Configuration revision must be a non-negative integer")
+        if not isinstance(self.raised_at, datetime):
+            raise TypeError("Alert raise time must be a datetime")
+        if self.raised_at.tzinfo is None or self.raised_at.utcoffset() is None:
+            raise ValueError("Alert raise time must include a timezone")
+        object.__setattr__(self, "raised_at", self.raised_at.astimezone(UTC))
+        self._check_type_specific_fields()
+        _check_rejection(self.sync_status, self.rejection_reason)
+
+    def _check_type_specific_fields(self) -> None:
+        """Enforce which threshold or geofence fields each alert type carries."""
+        if self.type in (AlertType.TEMPERATURE, AlertType.ACTIVITY):
+            if self.threshold_min_value is None or self.threshold_max_value is None:
+                raise ValueError("Threshold alerts require threshold minimum and maximum")
+            if self.threshold_min_value >= self.threshold_max_value:
+                raise ValueError("Threshold minimum must be lower than its maximum")
+            if self.geofence_id is not None or self.distance_to_boundary_meters is not None:
+                raise ValueError("Threshold alerts cannot carry geofence fields")
+            return
+        if self.geofence_id is None or self.distance_to_boundary_meters is None:
+            raise ValueError("Geofence alerts require a geofence and a boundary distance")
+        if self.threshold_min_value is not None or self.threshold_max_value is not None:
+            raise ValueError("Geofence alerts cannot carry threshold fields")
+        if self.distance_to_boundary_meters < 0:
+            raise ValueError("Boundary distance cannot be negative")
+
+    @classmethod
+    def raise_for(
+        cls,
+        device_id: str,
+        alert_type: AlertType,
+        severity: AlertSeverity,
+        reading_ids: tuple[uuid.UUID, ...],
+        configuration_revision: int,
+        raised_at: datetime,
+        threshold_min_value: float | None = None,
+        threshold_max_value: float | None = None,
+        geofence_id: uuid.UUID | None = None,
+        distance_to_boundary_meters: float | None = None,
+    ) -> "MonitoringAlert":
+        """Create a pending alert for a rule violation."""
+        return cls(
+            uuid.uuid4(),
+            device_id,
+            alert_type,
+            severity,
+            reading_ids,
+            configuration_revision,
+            raised_at,
+            threshold_min_value,
+            threshold_max_value,
+            geofence_id,
+            distance_to_boundary_meters,
+        )
+
+    @classmethod
+    def reconstitute(
+        cls,
+        alert_id: uuid.UUID,
+        device_id: str,
+        alert_type: AlertType,
+        severity: AlertSeverity,
+        reading_ids: tuple[uuid.UUID, ...],
+        configuration_revision: int,
+        raised_at: datetime,
+        threshold_min_value: float | None,
+        threshold_max_value: float | None,
+        geofence_id: uuid.UUID | None,
+        distance_to_boundary_meters: float | None,
+        sync_status: SyncStatus,
+        rejection_reason: str | None,
+    ) -> "MonitoringAlert":
+        """Rebuild a persisted alert with its stored synchronization state."""
+        return cls(
+            alert_id,
+            device_id,
+            alert_type,
+            severity,
+            reading_ids,
+            configuration_revision,
+            raised_at,
+            threshold_min_value,
+            threshold_max_value,
+            geofence_id,
+            distance_to_boundary_meters,
+            sync_status,
+            rejection_reason,
+        )
+
+    def mark_synced(self) -> "MonitoringAlert":
+        """Return this alert as accepted or recognized by the cloud."""
+        return replace(self, sync_status=SyncStatus.SYNCED, rejection_reason=None)
+
+    def mark_rejected(self, reason: str) -> "MonitoringAlert":
+        """Return this alert as rejected by the cloud, with the cloud's reason."""
+        return replace(self, sync_status=SyncStatus.REJECTED, rejection_reason=reason)
+
+
+@dataclass(frozen=True)
+class MonitoringRuleSet:
+    """The cached monitoring rules delivered by the ICHU cloud."""
+
+    ranch_id: uuid.UUID | None
+    revision: int
+    thresholds: tuple[Threshold, ...]
+    geofences: tuple[Geofence, ...]
+
+    def __post_init__(self) -> None:
+        if self.ranch_id is not None and not isinstance(self.ranch_id, uuid.UUID):
+            raise TypeError("Ranch identifier must be a UUID")
+        if (
+            isinstance(self.revision, bool)
+            or not isinstance(self.revision, int)
+            or self.revision < 0
+        ):
+            raise ValueError("Rule set revision must be a non-negative integer")
+        thresholds = tuple(self.thresholds)
+        if not all(isinstance(threshold, Threshold) for threshold in thresholds):
+            raise TypeError("Rule set thresholds must be Threshold values")
+        geofences = tuple(self.geofences)
+        if not all(isinstance(geofence, Geofence) for geofence in geofences):
+            raise TypeError("Rule set geofences must be Geofence values")
+        object.__setattr__(self, "thresholds", thresholds)
+        object.__setattr__(self, "geofences", geofences)
+
+    @classmethod
+    def empty(cls) -> "MonitoringRuleSet":
+        """Return the rule set used before the cloud has delivered any rules."""
+        return cls(None, 0, (), ())
