@@ -9,6 +9,8 @@ individually.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-07
+
 ### Added
 
 - Device authentication with `device_id` and `X-API-Key` through the IAM bounded
