@@ -1,0 +1,60 @@
+name: Git Flow checks
+
+on:
+  pull_request:
+    branches: [main, develop]
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate branch name and target
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          case "$HEAD_REF" in
+            feature/*|bugfix/*)
+              echo "$HEAD_REF" | grep -Eq '^(feature|bugfix)/[a-z0-9]+(-[a-z0-9]+)*$' \
+                || { echo "Use lowercase kebab-case: $HEAD_REF"; exit 1; }
+              [ "$BASE_REF" = "develop" ] \
+                || { echo "$HEAD_REF must target develop, not $BASE_REF"; exit 1; } ;;
+            release/*|hotfix/*)
+              echo "$HEAD_REF" | grep -Eq '^(release|hotfix)/v[0-9]+\.[0-9]+\.[0-9]+$' \
+                || { echo "Use release/vX.Y.Z or hotfix/vX.Y.Z: $HEAD_REF"; exit 1; } ;;
+            *)
+              echo "Branch $HEAD_REF is not a Git Flow branch (feature/, bugfix/, release/, hotfix/)"
+              exit 1 ;;
+          esac
+
+      - name: Validate commit messages
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Release branches only add their own commits; develop history was validated by earlier pull requests.
+          case "$HEAD_REF" in
+            release/*) range="origin/develop..$HEAD_SHA" ;;
+            *) range="$BASE_SHA..$HEAD_SHA" ;;
+          esac
+          # The convention is enforced for commits created since its adoption; older history is kept as is.
+          adoption_date="2026-11-07"
+          status=0
+          for sha in $(git rev-list --no-merges "$range"); do
+            commit_date=$(git log -1 --format=%cs "$sha")
+            if [[ "$commit_date" < "$adoption_date" ]]; then
+              continue
+            fi
+            git log -1 --format=%B "$sha" > "$RUNNER_TEMP/commit-message"
+            sh .githooks/commit-msg "$RUNNER_TEMP/commit-message" || status=1
+          done
+          exit $status
