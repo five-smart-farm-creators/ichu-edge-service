@@ -1,0 +1,297 @@
+@startuml ICHU Edge Service - Class Diagram
+
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+skinparam linetype ortho
+skinparam shadowing false
+
+package "IAM Bounded Context" #FFEBDE {
+  package "domain" #FFF2E8 {
+    class Device {
+      +device_id: str
+      +credential: ApiCredential
+      +created_at: datetime
+      +revoked_at: datetime | None
+      +register(device_id, api_key, created_at=None): Device
+      +authenticate(api_key): bool
+      +revoke(at=None): Device
+      +rotate_api_key(new_api_key): Device
+    }
+    class ApiCredential {
+      +create(secret): ApiCredential
+      +from_encoded(encoded): ApiCredential
+      +matches(secret): bool
+      +encode(): str
+    }
+    interface "DeviceRepository\n<<Protocol>>" as IDeviceRepository {
+      +find_by_device_id(device_id): Device | None
+      +save(device): Device
+      +get_or_create_device(device_id, api_key): Device
+    }
+  }
+  package "application" #FFE6D5 {
+    class AuthApplicationService {
+      +authenticate(device_id, api_key): bool
+      +register_device(device_id, api_key): Device
+      +rotate_api_key(device_id, new_api_key): Device
+      +revoke_device(device_id): Device
+      +get_or_create_device(device_id, api_key): Device
+    }
+  }
+  package "infrastructure" #FFDAC1 {
+    class DeviceModel <<Peewee Model>> {
+      +device_id: CharField
+      +credential_verifier: CharField
+      +created_at: DateTimeField
+      +revoked_at: DateTimeField | None
+    }
+    class "DeviceRepository\n(implementation)" as DeviceRepositoryImpl {
+      +migrate_schema()
+    }
+  }
+  package "interfaces" #FFCEAE {
+    class AuthRequest <<Pydantic Model>> {
+      +device_id: str
+    }
+    class iam_api <<Flask Blueprint>> {
+      +POST /api/v1/iam/authentications
+    }
+  }
+}
+
+package "Monitoring Bounded Context" #DEEAFF {
+  package "domain" #E2F0FF {
+    class TelemetryReading {
+      +reading_id: UUID
+      +event_id: TelemetryEventId
+      +recorded_at: RecordedAt
+      +timestamp_supplied: bool
+      +sync_status: SyncStatus
+      +record(...): TelemetryReading
+      +reconstitute(...): TelemetryReading
+      +mark_synced(): TelemetryReading
+      +mark_rejected(reason): TelemetryReading
+      +same_telemetry_as(other): bool
+    }
+    class MonitoringAlert {
+      +alert_id: UUID
+      +device_id: str
+      +type: AlertType
+      +severity: AlertSeverity
+      +reading_ids: tuple[UUID, ...]
+      +configuration_revision: int
+      +raised_at: datetime
+      +raise_for(...): MonitoringAlert
+      +mark_synced(): MonitoringAlert
+      +mark_rejected(reason): MonitoringAlert
+    }
+    class MonitoringRuleSet {
+      +ranch_id: UUID | None
+      +revision: int
+      +thresholds: tuple[Threshold, ...]
+      +geofences: tuple[Geofence, ...]
+      +empty(): MonitoringRuleSet
+    }
+    class RuleEvaluator {
+      +evaluate(reading, assignment, rules): list[RuleViolation]
+    }
+    class RuleViolation {
+      +type: AlertType
+      +severity: AlertSeverity
+      +threshold_min_value: float | None
+      +threshold_max_value: float | None
+      +geofence_id: UUID | None
+      +distance_to_boundary_meters: float | None
+    }
+    class SubmittingDevice {
+      +device_id: str
+    }
+    class Threshold {
+      +life_stage: str
+      +metric: MonitoredMetric
+      +min_value: float
+      +max_value: float
+      +severity: AlertSeverity
+    }
+    class Geofence {
+      +lot_id: UUID
+      +name: str
+      +tolerance_meters: int
+      +severity: AlertSeverity
+      +vertices: tuple[Coordinate, ...]
+    }
+    class DeviceAssignment {
+      +device_id: str
+      +lot_id: UUID | None
+      +life_stage: str | None
+    }
+    class "Measurements and positions\n<<value objects>>" as MeasurementVOs {
+      BodyTemperature, ActivityIndex, BatteryLevel,
+      GeoPosition, Coordinate, RecordedAt, TelemetryEventId
+    }
+    interface "TelemetryReadingRepository\n<<Protocol>>" as IReadingRepository
+    interface "MonitoringAlertRepository\n<<Protocol>>" as IAlertRepository
+    interface "MonitoringRuleSetRepository\n<<Protocol>>" as IRuleRepository
+    interface "DeviceAssignmentRepository\n<<Protocol>>" as IAssignmentRepository
+  }
+
+  package "application" #D5E7FF {
+    class TelemetryIngestionService {
+      +ingest(device_id, api_key, event_id, recorded_at, body_temperature, activity_index, battery_level, position): IngestionResult
+    }
+    class MonitoringQueryService {
+      +latest_alerts(limit): list[MonitoringAlert]
+      +status(): EdgeStatus
+    }
+    class SynchronizationService {
+      +refresh_rules(): RuleRefreshResult
+      +push_pending(): SyncResult
+      +synchronize(): SynchronizationResult
+    }
+    interface "CloudGateway\n<<Protocol>>" as ICloudGateway {
+      +fetch_rules(after_revision): MonitoringRuleSet | None
+      +send_batch(readings, alerts): list[CloudEntryResult]
+    }
+    class DeviceAuthenticationFailed
+    class CloudUnavailable
+    class CloudCredentialsRejected
+    class SynchronizationDisabled
+  }
+
+  package "integration" #DCE8F5 {
+    class IamAntiCorruptionLayer {
+      +authenticated_submitting_device(device_id, credential): SubmittingDevice | None
+    }
+    class IchuCloudAntiCorruptionLayer {
+      +fetch_rules(after_revision): MonitoringRuleSet | None
+      +send_batch(readings, alerts): list[CloudEntryResult]
+    }
+    class DisabledCloudAntiCorruptionLayer
+  }
+
+  package "infrastructure" #C9DFFF {
+    class TelemetryReadingModel <<Peewee Model>>
+    class MonitoringAlertModel <<Peewee Model>>
+    class MonitoringRuleSetModel <<Peewee Model>>
+    class ThresholdModel <<Peewee Model>>
+    class GeofenceModel <<Peewee Model>>
+    class DeviceAssignmentModel <<Peewee Model>>
+    class "TelemetryReadingRepository\n(implementation)" as TelemetryReadingRepositoryImpl
+    class "MonitoringAlertRepository\n(implementation)" as MonitoringAlertRepositoryImpl
+    class "MonitoringRuleSetRepository\n(implementation)" as MonitoringRuleSetRepositoryImpl
+    class "DeviceAssignmentRepository\n(implementation)" as DeviceAssignmentRepositoryImpl
+    class IchuCloudClient {
+      +fetch_monitoring_rules(after_revision): dict | None
+      +send_telemetry_batch(payload): dict
+    }
+  }
+
+  package "interfaces" #BCCEFF {
+    class TelemetryReadingCreateRequest <<Pydantic Model>>
+    class monitoring_api <<Flask Blueprint>> {
+      +POST /api/v1/monitoring/telemetry-readings
+      +GET /api/v1/monitoring/alerts
+      +POST /api/v1/synchronizations
+    }
+  }
+}
+
+package "Shared Infrastructure" #E8FFE8 {
+  class db <<SqliteDatabase>>
+  class configure_database {
+    +configure_database(database_path)
+  }
+  class init_db {
+    +init_db()
+  }
+  class status_api <<Flask Blueprint>> {
+    +GET /api/v1/status
+  }
+}
+
+class create_app {
+  +create_app(): Flask
+}
+
+Device --> ApiCredential
+AuthApplicationService --> IDeviceRepository : depends on protocol
+AuthApplicationService ..> Device : coordinates lifecycle
+DeviceRepositoryImpl ..|> IDeviceRepository
+DeviceRepositoryImpl --> DeviceModel
+iam_api --> AuthRequest : validates
+iam_api --> AuthApplicationService : invokes
+
+TelemetryReading --> SubmittingDevice
+TelemetryReading --> MeasurementVOs
+MonitoringAlert --> MeasurementVOs
+MonitoringRuleSet --> Threshold
+MonitoringRuleSet --> Geofence
+RuleEvaluator ..> TelemetryReading : evaluates
+RuleEvaluator ..> MonitoringRuleSet : uses
+RuleEvaluator ..> RuleViolation : returns
+TelemetryIngestionService --> IamAntiCorruptionLayer
+TelemetryIngestionService --> IReadingRepository
+TelemetryIngestionService --> IAlertRepository
+TelemetryIngestionService --> IRuleRepository
+TelemetryIngestionService --> IAssignmentRepository
+TelemetryIngestionService --> RuleEvaluator
+TelemetryIngestionService ..> DeviceAuthenticationFailed : raises
+SynchronizationService --> ICloudGateway
+SynchronizationService --> IReadingRepository
+SynchronizationService --> IAlertRepository
+SynchronizationService --> IRuleRepository
+SynchronizationService ..> CloudUnavailable : propagates
+SynchronizationService ..> CloudCredentialsRejected : propagates
+MonitoringQueryService --> IReadingRepository
+MonitoringQueryService --> IAlertRepository
+MonitoringQueryService --> IRuleRepository
+
+IamAntiCorruptionLayer --> AuthApplicationService : authenticates through
+IamAntiCorruptionLayer ..> SubmittingDevice : translates result
+IchuCloudAntiCorruptionLayer ..|> ICloudGateway
+IchuCloudAntiCorruptionLayer --> IchuCloudClient
+DisabledCloudAntiCorruptionLayer ..|> ICloudGateway
+DisabledCloudAntiCorruptionLayer ..> SynchronizationDisabled : raises
+
+TelemetryReadingRepositoryImpl ..|> IReadingRepository
+MonitoringAlertRepositoryImpl ..|> IAlertRepository
+MonitoringRuleSetRepositoryImpl ..|> IRuleRepository
+DeviceAssignmentRepositoryImpl ..|> IAssignmentRepository
+TelemetryReadingRepositoryImpl --> TelemetryReadingModel
+MonitoringAlertRepositoryImpl --> MonitoringAlertModel
+MonitoringRuleSetRepositoryImpl --> MonitoringRuleSetModel
+MonitoringRuleSetRepositoryImpl --> ThresholdModel
+MonitoringRuleSetRepositoryImpl --> GeofenceModel
+DeviceAssignmentRepositoryImpl --> DeviceAssignmentModel
+monitoring_api --> TelemetryReadingCreateRequest : validates
+monitoring_api --> TelemetryIngestionService : invokes
+monitoring_api --> MonitoringQueryService : invokes
+monitoring_api --> SynchronizationService : invokes
+status_api --> MonitoringQueryService : invokes
+
+TelemetryReadingModel --> db
+MonitoringAlertModel --> db
+MonitoringRuleSetModel --> db
+ThresholdModel --> db
+GeofenceModel --> db
+DeviceAssignmentModel --> db
+DeviceModel --> db
+init_db ..> TelemetryReadingModel : creates table
+init_db ..> DeviceModel : creates table
+configure_database ..> db : configures
+create_app ..> configure_database
+create_app ..> init_db
+create_app ..> DeviceRepositoryImpl : migrates schema
+create_app ..> AuthApplicationService : composes
+create_app ..> TelemetryIngestionService : composes
+create_app ..> SynchronizationService : composes
+create_app ..> iam_api : registers
+create_app ..> monitoring_api : registers
+create_app ..> status_api : registers
+
+note bottom of create_app
+Database setup, additive migrations, and optional
+development seeding happen at application creation.
+end note
+
+@enduml
