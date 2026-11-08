@@ -9,6 +9,11 @@ individually.
 
 ## [Unreleased]
 
+### Changed
+
+- Documented the backend gateway key format `{gatewayId}.{secret}` and the key of the
+  seeded development gateway, which replaces the backend's development simulation.
+
 ## [0.1.0] - 2026-11-07
 
 ### Added

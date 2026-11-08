@@ -206,7 +206,7 @@ setting; it does not supply defaults for missing settings.
 | `DEVELOPMENT_DEVICE_API_KEY` | empty | empty | Required when seeding is enabled |
 | `CLOUD_API_BASE_URL` | empty | empty | Empty disables synchronization; otherwise an http(s) URL |
 | `EDGE_GATEWAY_ID` | `c07d8c6e-6d9b-4cb7-9add-7b8c9daebfc6` | empty | UUID; required when `CLOUD_API_BASE_URL` is set |
-| `EDGE_GATEWAY_KEY` | empty | empty | Secret; required when `CLOUD_API_BASE_URL` is set; never committed |
+| `EDGE_GATEWAY_KEY` | empty | empty | `{gatewayId}.{secret}` issued by the backend; required when `CLOUD_API_BASE_URL` is set; never committed |
 | `ALERT_DEDUPLICATION_MINUTES` | `15` | `15` | Integer from 1 to 1440 |
 | `SYNC_BATCH_SIZE` | `100` | `100` | Integer from 1 to 500 |
 | `CLOUD_TIMEOUT_SECONDS` | `10` | `10` | Integer from 1 to 60 |
@@ -244,8 +244,8 @@ marked `synced` or `rejected` once the cloud answers.
 ## Development Devices
 
 When `SEED_DEVELOPMENT_DATA=true`, the following devices are registered with the
-`DEVELOPMENT_DEVICE_API_KEY` value. Their identifiers match the cloud development
-simulation.
+`DEVELOPMENT_DEVICE_API_KEY` value. Their identifiers match the collars seeded in the
+backend's development data.
 
 | Device ID | Lot | Life stage |
 |---|---|---|
@@ -473,25 +473,27 @@ curl -X POST http://127.0.0.1:5000/api/v1/synchronizations
 ## Synchronization with the Cloud
 
 Synchronization is disabled in the development profile. To synchronize with the ICHU backend
-running locally (development simulation), set these variables in the process environment before
+running locally with its development data, set these variables in the process environment before
 starting the service.
 
 Windows PowerShell:
 
 ```powershell
 $env:CLOUD_API_BASE_URL = "http://localhost:5099"
-$env:EDGE_GATEWAY_KEY = "development-gateway-key"
+$env:EDGE_GATEWAY_KEY = "c07d8c6e-6d9b-4cb7-9add-7b8c9daebfc6.development-gateway-key"
 ```
 
 bash:
 
 ```sh
 export CLOUD_API_BASE_URL=http://localhost:5099
-export EDGE_GATEWAY_KEY=development-gateway-key
+export EDGE_GATEWAY_KEY=c07d8c6e-6d9b-4cb7-9add-7b8c9daebfc6.development-gateway-key
 ```
 
-`development-gateway-key` is the development simulation gateway key of the ICHU backend. It is for
-local development only and must never be used on a real deployment.
+A gateway key has the form `{gatewayId}.{secret}`. The backend returns it once, when the gateway is
+registered with `POST /api/v1/ranches/{ranchId}/edge-gateways`, and stores only a hash of the secret.
+The key above belongs to the gateway seeded in the backend's development data; it is for local
+development only and must never be used on a real deployment.
 
 - **Rules**: the gateway requests `GET /api/v1/edge-gateways/{gatewayId}/monitoring-rules` with the
   `afterRevision` of its cached rules. A `304 Not Modified` answer keeps the cache; a `200 OK`
