@@ -263,6 +263,36 @@ class SynchronizationServiceTestCase(unittest.TestCase):
             SynchronizationResult(False, 0, 0, 0, 0, 0, 0),
         )
 
+    def test_batch_limit_applies_to_readings_and_alerts_together(self):
+        readings = [make_reading(f"limit-{index}", 38.5) for index in range(3)]
+        alerts = [MonitoringAlert.raise_for(
+            DEVICE_ID, AlertType.TEMPERATURE, AlertSeverity.WARNING,
+            (readings[0].reading_id,), 3, NOW, 37.5, 39.5
+        ) for _ in range(2)]
+        cloud = FakeCloudGateway()
+        service = SynchronizationService(cloud, FakeReadingRepository(readings),
+            FakeAlertRepository(alerts), FakeRuleRepository(), batch_size=4)
+
+        result = service.push_pending()
+
+        self.assertEqual((result.sent_readings, result.sent_alerts), (3, 1))
+        sent_readings, sent_alerts = cloud.sent_batches[0]
+        self.assertEqual(4, len(sent_readings) + len(sent_alerts))
+
+    def test_full_reading_batch_leaves_alerts_pending(self):
+        reading = make_reading("full", 38.5)
+        alert = MonitoringAlert.raise_for(DEVICE_ID, AlertType.TEMPERATURE,
+            AlertSeverity.WARNING, (reading.reading_id,), 3, NOW, 37.5, 39.5)
+        cloud = FakeCloudGateway()
+        alerts = FakeAlertRepository([alert])
+        service = SynchronizationService(cloud, FakeReadingRepository([reading]),
+            alerts, FakeRuleRepository(), batch_size=1)
+
+        result = service.push_pending()
+
+        self.assertEqual((result.sent_readings, result.sent_alerts), (1, 0))
+        self.assertEqual(SyncStatus.PENDING, alerts.alerts[alert.alert_id].sync_status)
+
     def test_disabled_gateway_refuses_every_call(self):
         gateway = DisabledCloudAntiCorruptionLayer()
 

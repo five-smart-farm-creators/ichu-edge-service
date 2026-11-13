@@ -9,6 +9,10 @@ individually.
 
 ## [Unreleased]
 
+### Fixed
+
+- Apply the synchronization batch limit to readings and alerts together.
+
 ### Added
 
 - GitHub Actions `test` job that runs the unit test suite on pull requests.

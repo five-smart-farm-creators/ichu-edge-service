@@ -251,7 +251,8 @@ class SynchronizationService:
     def push_pending(self) -> SyncResult:
         """Send one batch of pending records and apply the per-entry answer; missing entries stay pending."""
         readings = self._readings.find_pending(self._batch_size)
-        alerts = self._alerts.find_pending(self._batch_size)
+        remaining = self._batch_size - len(readings)
+        alerts = self._alerts.find_pending(remaining) if remaining else []
         if not readings and not alerts:
             return SyncResult(0, 0, 0, 0, 0)
         outcome: Counter[SyncStatus] = Counter()
