@@ -22,6 +22,7 @@ _ENV_FILE_VALUES = {
         "EDGE_GATEWAY_KEY": "",
         "ALERT_DEDUPLICATION_MINUTES": "15",
         "SYNC_BATCH_SIZE": "100",
+        "SYNC_INTERVAL_SECONDS": "15",
         "CLOUD_TIMEOUT_SECONDS": "10",
     },
     "production": {
@@ -36,6 +37,7 @@ _ENV_FILE_VALUES = {
         "EDGE_GATEWAY_KEY": "",
         "ALERT_DEDUPLICATION_MINUTES": "15",
         "SYNC_BATCH_SIZE": "100",
+        "SYNC_INTERVAL_SECONDS": "15",
         "CLOUD_TIMEOUT_SECONDS": "10",
     },
 }
@@ -71,6 +73,7 @@ class LoadConfigTestCase(unittest.TestCase):
         self.assertIsNone(config["CLOUD_API_BASE_URL"])
         self.assertEqual(config["EDGE_GATEWAY_ID"], "c07d8c6e-6d9b-4cb7-9add-7b8c9daebfc6")
         self.assertEqual(config["SYNC_BATCH_SIZE"], 100)
+        self.assertEqual(config["SYNC_INTERVAL_SECONDS"], 15)
 
     def test_production_defaults_disable_debug_seeding_and_cloud_sync(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -270,6 +273,8 @@ class LoadConfigTestCase(unittest.TestCase):
             {"PORT": "70000"},
             {"ALERT_DEDUPLICATION_MINUTES": "0"},
             {"SYNC_BATCH_SIZE": "501"},
+            {"SYNC_INTERVAL_SECONDS": "4"},
+            {"SYNC_INTERVAL_SECONDS": "3601"},
             {"CLOUD_TIMEOUT_SECONDS": "61"},
             {"CLOUD_API_BASE_URL": "ftp://example.org"},
         )

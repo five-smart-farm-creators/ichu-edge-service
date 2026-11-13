@@ -13,5 +13,9 @@ class CloudCredentialsRejected(Exception):
     """Raised when the ICHU cloud API rejects the edge gateway credentials."""
 
 
+class CloudBatchRejected(Exception):
+    """Raised when the ICHU cloud API refuses a whole batch as invalid."""
+
+
 class SynchronizationDisabled(Exception):
     """Raised when cloud synchronization is not configured for this gateway."""

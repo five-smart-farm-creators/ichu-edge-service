@@ -21,7 +21,7 @@ match the bounded contexts IAM and Monitoring.
 | TS-EDGE-003 | Persist Readings Idempotently | Monitoring | `monitoring/infrastructure/repositories.py`: `TelemetryReadingRepository.save_idempotently`; `monitoring/infrastructure/models.py`: `TelemetryReadingModel` |
 | TS-EDGE-004 | Raise Local Alerts from Cached Rules | Monitoring | `monitoring/domain/services.py`: `RuleEvaluator`, `point_in_polygon`, `distance_to_boundary_meters`; `monitoring/domain/entities.py`: `MonitoringRuleSet`, `MonitoringAlert.raise_for` |
 | TS-EDGE-005 | Deduplicate Alerts Within a Window | Monitoring | `monitoring/application/services.py`: `TelemetryIngestionService.ingest`; `monitoring/infrastructure/repositories.py`: `MonitoringAlertRepository.find_recent` |
-| TS-EDGE-006 | Synchronize with the ICHU Cloud API | Monitoring | `monitoring/application/services.py`: `SynchronizationService`; `monitoring/integration/cloud_anti_corruption_layer.py`: `IchuCloudAntiCorruptionLayer`, `DisabledCloudAntiCorruptionLayer`; `monitoring/infrastructure/cloud_client.py`: `IchuCloudClient`; `monitoring/interfaces/services.py`: `synchronize` |
+| TS-EDGE-006 | Synchronize with the ICHU Cloud API | Monitoring | `monitoring/application/services.py`: `SynchronizationService`; `monitoring/integration/cloud_anti_corruption_layer.py`: `IchuCloudAntiCorruptionLayer`, `DisabledCloudAntiCorruptionLayer`; `monitoring/infrastructure/cloud_client.py`: `IchuCloudClient`; `monitoring/interfaces/services.py`: `synchronize`; `monitoring/interfaces/commands.py`: `synchronize_command`, `run_synchronizer`, `next_delay_seconds` |
 | TS-EDGE-007 | Bootstrap Storage and Configuration | Application bootstrap; shared infrastructure | `app.py`: `create_app`, `seed_development_data`; `config.py`: `load_config`; `shared/infrastructure/database.py`: `configure_database`, `init_db` |
 
 ---
@@ -205,10 +205,30 @@ Acceptance criteria:
   - Then the response is `503 Service Unavailable`
   - And every pending record remains `pending`
 
-- Scenario: Entry conflicting with cloud data
+- Scenario: Conflict retried before rejection
   - Given a pending reading was sent
   - When the cloud answers `Conflict` with a reason
-  - Then the reading is marked `rejected` with that reason
+  - Then the reading remains `pending` with one more attempt counted
+  - And after the fifth conflicting answer the reading is marked `rejected` with that reason
+
+- Scenario: Refused batch isolated
+  - Given pending readings `A`, `X`, and `B` were sent in one batch
+  - When the cloud refuses the batch as invalid (`400` or `422`) because of `X`
+  - Then `A` and `B` follow their own answers and are marked `synced`
+  - And `X` remains `pending` with one more attempt counted
+  - And after the fifth refusal `X` is marked `rejected` with `Refused by the ICHU cloud API as invalid`
+
+- Scenario: Periodic run sends pending records
+  - Given the gateway runs `flask --app app synchronize` with `SYNC_INTERVAL_SECONDS` set to 15
+  - When a cycle sends a partial batch
+  - Then the next cycle starts after 15 seconds
+  - And when a cycle sends a full batch that settles records, the next cycle starts at once
+
+- Scenario: Periodic run backs off while the cloud is down
+  - Given the cloud cannot be reached
+  - When consecutive cycles fail
+  - Then each wait doubles, up to 5 minutes
+  - And every pending record remains `pending`
 
 - Scenario: Gateway credentials rejected
   - Given the cloud answers `401 Unauthorized` or `403 Forbidden`

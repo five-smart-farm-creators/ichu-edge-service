@@ -191,4 +191,5 @@ def synchronize():
         "sentAlerts": result.sent_alerts,
         "synced": result.synced,
         "rejected": result.rejected,
+        "deferred": result.deferred,
     }), 200

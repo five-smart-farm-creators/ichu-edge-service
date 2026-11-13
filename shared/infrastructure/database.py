@@ -4,7 +4,7 @@ from pathlib import Path
 
 from peewee import SqliteDatabase
 
-# WAL lets reads continue while another process writes, such as a second WSGI worker.
+# WAL lets the API keep reading while the synchronizer process writes.
 db = SqliteDatabase(
     None, timeout=30, pragmas={"journal_mode": "wal", "busy_timeout": 30_000}
 )

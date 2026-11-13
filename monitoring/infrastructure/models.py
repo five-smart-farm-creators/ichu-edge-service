@@ -21,6 +21,7 @@ class TelemetryReadingModel(Model):
     accuracy_meters = FloatField(null=True)
     sync_status = CharField(max_length=16)
     rejection_reason = TextField(null=True)
+    sync_attempts = IntegerField(default=0)
 
     class Meta:
         database = db
@@ -47,6 +48,7 @@ class MonitoringAlertModel(Model):
     distance_to_boundary_meters = FloatField(null=True)
     sync_status = CharField(max_length=16)
     rejection_reason = TextField(null=True)
+    sync_attempts = IntegerField(default=0)
 
     class Meta:
         database = db

@@ -67,10 +67,12 @@ package "Monitoring Bounded Context" #DEEAFF {
       +recorded_at: RecordedAt
       +timestamp_supplied: bool
       +sync_status: SyncStatus
+      +sync_attempts: int
       +record(...): TelemetryReading
       +reconstitute(...): TelemetryReading
       +mark_synced(): TelemetryReading
       +mark_rejected(reason): TelemetryReading
+      +defer_retry(reason, max_attempts): TelemetryReading
       +same_telemetry_as(other): bool
     }
     class MonitoringAlert {
@@ -81,9 +83,11 @@ package "Monitoring Bounded Context" #DEEAFF {
       +reading_ids: tuple[UUID, ...]
       +configuration_revision: int
       +raised_at: datetime
+      +sync_attempts: int
       +raise_for(...): MonitoringAlert
       +mark_synced(): MonitoringAlert
       +mark_rejected(reason): MonitoringAlert
+      +defer_retry(reason, max_attempts): MonitoringAlert
     }
     class MonitoringRuleSet {
       +ranch_id: UUID | None
@@ -155,6 +159,7 @@ package "Monitoring Bounded Context" #DEEAFF {
     class DeviceAuthenticationFailed
     class CloudUnavailable
     class CloudCredentialsRejected
+    class CloudBatchRejected
     class SynchronizationDisabled
   }
 
@@ -176,8 +181,12 @@ package "Monitoring Bounded Context" #DEEAFF {
     class ThresholdModel <<Peewee Model>>
     class GeofenceModel <<Peewee Model>>
     class DeviceAssignmentModel <<Peewee Model>>
-    class "TelemetryReadingRepository\n(implementation)" as TelemetryReadingRepositoryImpl
-    class "MonitoringAlertRepository\n(implementation)" as MonitoringAlertRepositoryImpl
+    class "TelemetryReadingRepository\n(implementation)" as TelemetryReadingRepositoryImpl {
+      +migrate_schema()
+    }
+    class "MonitoringAlertRepository\n(implementation)" as MonitoringAlertRepositoryImpl {
+      +migrate_schema()
+    }
     class "MonitoringRuleSetRepository\n(implementation)" as MonitoringRuleSetRepositoryImpl
     class "DeviceAssignmentRepository\n(implementation)" as DeviceAssignmentRepositoryImpl
     class IchuCloudClient {
@@ -192,6 +201,11 @@ package "Monitoring Bounded Context" #DEEAFF {
       +POST /api/v1/monitoring/telemetry-readings
       +GET /api/v1/monitoring/alerts
       +POST /api/v1/synchronizations
+    }
+    class "commands.py\n<<Click commands>>" as MonitoringCommands {
+      +synchronize(interval, once)
+      +run_synchronizer(service, interval_seconds, batch_size, sleep, cycles)
+      +next_delay_seconds(interval_seconds, consecutive_failures): int
     }
   }
 }
@@ -242,6 +256,7 @@ SynchronizationService --> IAlertRepository
 SynchronizationService --> IRuleRepository
 SynchronizationService ..> CloudUnavailable : propagates
 SynchronizationService ..> CloudCredentialsRejected : propagates
+SynchronizationService ..> CloudBatchRejected : splits batch on
 MonitoringQueryService --> IReadingRepository
 MonitoringQueryService --> IAlertRepository
 MonitoringQueryService --> IRuleRepository
@@ -250,6 +265,7 @@ IamAntiCorruptionLayer --> AuthApplicationService : authenticates through
 IamAntiCorruptionLayer ..> SubmittingDevice : translates result
 IchuCloudAntiCorruptionLayer ..|> ICloudGateway
 IchuCloudAntiCorruptionLayer --> IchuCloudClient
+IchuCloudClient ..> CloudBatchRejected : raises on 400 or 422
 DisabledCloudAntiCorruptionLayer ..|> ICloudGateway
 DisabledCloudAntiCorruptionLayer ..> SynchronizationDisabled : raises
 
@@ -267,6 +283,8 @@ monitoring_api --> TelemetryReadingCreateRequest : validates
 monitoring_api --> TelemetryIngestionService : invokes
 monitoring_api --> MonitoringQueryService : invokes
 monitoring_api --> SynchronizationService : invokes
+MonitoringCommands --> SynchronizationService : runs cycles through
+MonitoringCommands ..> SynchronizationDisabled : maps to a command error
 status_api --> MonitoringQueryService : invokes
 
 TelemetryReadingModel --> db
@@ -282,11 +300,14 @@ configure_database ..> db : configures
 create_app ..> configure_database
 create_app ..> init_db
 create_app ..> DeviceRepositoryImpl : migrates schema
+create_app ..> TelemetryReadingRepositoryImpl : migrates schema
+create_app ..> MonitoringAlertRepositoryImpl : migrates schema
 create_app ..> AuthApplicationService : composes
 create_app ..> TelemetryIngestionService : composes
 create_app ..> SynchronizationService : composes
 create_app ..> iam_api : registers
 create_app ..> monitoring_api : registers
+create_app ..> MonitoringCommands : registers synchronize
 create_app ..> status_api : registers
 
 note bottom of create_app

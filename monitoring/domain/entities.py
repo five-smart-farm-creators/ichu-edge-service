@@ -29,6 +29,12 @@ def _check_rejection(sync_status: SyncStatus, rejection_reason: str | None) -> N
         raise ValueError("Only rejected records carry a rejection reason")
 
 
+def _check_sync_attempts(sync_attempts: int) -> None:
+    """Require a count of failed synchronization attempts that is a non-negative integer."""
+    if isinstance(sync_attempts, bool) or not isinstance(sync_attempts, int) or sync_attempts < 0:
+        raise ValueError("Synchronization attempts must be a non-negative integer")
+
+
 @dataclass(frozen=True)
 class SubmittingDevice:
     """Monitoring's local representation of a device allowed to submit telemetry."""
@@ -56,6 +62,7 @@ class TelemetryReading:
     position: GeoPosition | None = None
     sync_status: SyncStatus = SyncStatus.PENDING
     rejection_reason: str | None = None
+    sync_attempts: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.reading_id, uuid.UUID):
@@ -95,6 +102,7 @@ class TelemetryReading:
         if not isinstance(self.sync_status, SyncStatus):
             raise TypeError("TelemetryReading sync status must be a SyncStatus")
         _check_rejection(self.sync_status, self.rejection_reason)
+        _check_sync_attempts(self.sync_attempts)
 
     @classmethod
     def record(
@@ -134,6 +142,7 @@ class TelemetryReading:
         position: GeoPosition | None,
         sync_status: SyncStatus,
         rejection_reason: str | None,
+        sync_attempts: int,
     ) -> "TelemetryReading":
         """Rebuild a persisted reading with its stored synchronization state."""
         return cls(
@@ -148,6 +157,7 @@ class TelemetryReading:
             position,
             sync_status,
             rejection_reason,
+            sync_attempts,
         )
 
     @property
@@ -162,6 +172,20 @@ class TelemetryReading:
     def mark_rejected(self, reason: str) -> "TelemetryReading":
         """Return this reading as rejected by the cloud, with the cloud's reason."""
         return replace(self, sync_status=SyncStatus.REJECTED, rejection_reason=reason)
+
+    def defer_retry(self, reason: str, max_attempts: int) -> "TelemetryReading":
+        """Keep the record pending for another attempt, rejecting it once the attempts run out."""
+        if max_attempts < 1:
+            raise ValueError("Maximum synchronization attempts must be at least one")
+        attempts = self.sync_attempts + 1
+        if attempts >= max_attempts:
+            return replace(
+                self,
+                sync_status=SyncStatus.REJECTED,
+                rejection_reason=reason,
+                sync_attempts=attempts,
+            )
+        return replace(self, sync_attempts=attempts)
 
     def same_telemetry_as(self, other: "TelemetryReading") -> bool:
         """Return whether two submissions carry the same telemetry; time counts only when device-supplied."""
@@ -199,6 +223,7 @@ class MonitoringAlert:
     distance_to_boundary_meters: float | None = None
     sync_status: SyncStatus = SyncStatus.PENDING
     rejection_reason: str | None = None
+    sync_attempts: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.alert_id, uuid.UUID):
@@ -227,6 +252,7 @@ class MonitoringAlert:
         object.__setattr__(self, "raised_at", self.raised_at.astimezone(UTC))
         self._check_type_specific_fields()
         _check_rejection(self.sync_status, self.rejection_reason)
+        _check_sync_attempts(self.sync_attempts)
 
     def _check_type_specific_fields(self) -> None:
         """Enforce which threshold or geofence fields each alert type carries."""
@@ -290,6 +316,7 @@ class MonitoringAlert:
         distance_to_boundary_meters: float | None,
         sync_status: SyncStatus,
         rejection_reason: str | None,
+        sync_attempts: int,
     ) -> "MonitoringAlert":
         """Rebuild a persisted alert with its stored synchronization state."""
         return cls(
@@ -306,6 +333,7 @@ class MonitoringAlert:
             distance_to_boundary_meters,
             sync_status,
             rejection_reason,
+            sync_attempts,
         )
 
     def mark_synced(self) -> "MonitoringAlert":
@@ -315,6 +343,20 @@ class MonitoringAlert:
     def mark_rejected(self, reason: str) -> "MonitoringAlert":
         """Return this alert as rejected by the cloud, with the cloud's reason."""
         return replace(self, sync_status=SyncStatus.REJECTED, rejection_reason=reason)
+
+    def defer_retry(self, reason: str, max_attempts: int) -> "MonitoringAlert":
+        """Keep the record pending for another attempt, rejecting it once the attempts run out."""
+        if max_attempts < 1:
+            raise ValueError("Maximum synchronization attempts must be at least one")
+        attempts = self.sync_attempts + 1
+        if attempts >= max_attempts:
+            return replace(
+                self,
+                sync_status=SyncStatus.REJECTED,
+                rejection_reason=reason,
+                sync_attempts=attempts,
+            )
+        return replace(self, sync_attempts=attempts)
 
 
 @dataclass(frozen=True)
