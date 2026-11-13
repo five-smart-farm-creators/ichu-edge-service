@@ -1,6 +1,7 @@
 """Domain entities for the Monitoring bounded context."""
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
@@ -12,6 +13,7 @@ from monitoring.domain.value_objects import (
     BodyTemperature,
     Geofence,
     GeoPosition,
+    InvalidMeasurementReasons,
     RecordedAt,
     SyncStatus,
     TelemetryEventId,
@@ -60,6 +62,7 @@ class TelemetryReading:
     activity_index: ActivityIndex | None = None
     battery_level: BatteryLevel | None = None
     position: GeoPosition | None = None
+    invalid_reasons: InvalidMeasurementReasons = InvalidMeasurementReasons()
     sync_status: SyncStatus = SyncStatus.PENDING
     rejection_reason: str | None = None
     sync_attempts: int = 0
@@ -89,16 +92,20 @@ class TelemetryReading:
             raise TypeError("Battery level must be a BatteryLevel value")
         if self.position is not None and not isinstance(self.position, GeoPosition):
             raise TypeError("Position must be a GeoPosition value")
-        if all(
-            measurement is None
-            for measurement in (
-                self.body_temperature,
-                self.activity_index,
-                self.battery_level,
-                self.position,
+        if not isinstance(self.invalid_reasons, InvalidMeasurementReasons):
+            raise TypeError("Invalid reasons must be an InvalidMeasurementReasons value")
+        measurements = {
+            "body_temperature": self.body_temperature,
+            "activity_index": self.activity_index,
+            "battery_level": self.battery_level,
+            "position": self.position,
+        }
+        if any(measurements[field] is not None for field in self.invalid_reasons.fields()):
+            raise ValueError("A measurement cannot be both captured and invalid")
+        if not self.invalid_reasons and all(value is None for value in measurements.values()):
+            raise ValueError(
+                "Telemetry reading requires at least one measurement value or invalid reason"
             )
-        ):
-            raise ValueError("Telemetry reading requires at least one measurement")
         if not isinstance(self.sync_status, SyncStatus):
             raise TypeError("TelemetryReading sync status must be a SyncStatus")
         _check_rejection(self.sync_status, self.rejection_reason)
@@ -114,6 +121,7 @@ class TelemetryReading:
         activity_index: float | None,
         battery_level: float | None,
         position: GeoPosition | None,
+        invalid_reasons: Mapping[str, str] | None = None,
     ) -> "TelemetryReading":
         """Create a new pending reading, enforcing domain invariants."""
         return cls(
@@ -126,6 +134,7 @@ class TelemetryReading:
             None if activity_index is None else ActivityIndex(activity_index),
             None if battery_level is None else BatteryLevel(battery_level),
             position,
+            InvalidMeasurementReasons(invalid_reasons),
         )
 
     @classmethod
@@ -140,6 +149,7 @@ class TelemetryReading:
         activity_index: ActivityIndex | None,
         battery_level: BatteryLevel | None,
         position: GeoPosition | None,
+        invalid_reasons: InvalidMeasurementReasons,
         sync_status: SyncStatus,
         rejection_reason: str | None,
         sync_attempts: int,
@@ -155,6 +165,7 @@ class TelemetryReading:
             activity_index,
             battery_level,
             position,
+            invalid_reasons,
             sync_status,
             rejection_reason,
             sync_attempts,
@@ -198,11 +209,13 @@ class TelemetryReading:
             self.activity_index,
             self.battery_level,
             self.position,
+            self.invalid_reasons,
         ) == (
             other.body_temperature,
             other.activity_index,
             other.battery_level,
             other.position,
+            other.invalid_reasons,
         )
 
 

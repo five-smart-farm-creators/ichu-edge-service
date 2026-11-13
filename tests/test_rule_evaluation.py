@@ -165,5 +165,43 @@ class GeofenceEvaluationTestCase(unittest.TestCase):
         self.assertEqual([violation.severity for violation in violations], [AlertSeverity.CRITICAL, AlertSeverity.INFORMATIVE])
 
 
+class GeofenceAccuracyTestCase(unittest.TestCase):
+    def setUp(self):
+        self.evaluator = RuleEvaluator()
+        self.assignment = DeviceAssignment(DEVICE_ID, LOT_ID, None)
+        self.geofence = Geofence(
+            uuid.uuid4(),
+            LOT_ID,
+            "South pasture",
+            25,
+            AlertSeverity.CRITICAL,
+            square_around(CENTER_LATITUDE, CENTER_LONGITUDE, HALF_SIDE_DEGREES),
+        )
+        self.rules = rules(geofences=(self.geofence,))
+
+    def evaluate_outside(self, meters_outside, accuracy_meters):
+        longitude = CENTER_LONGITUDE + HALF_SIDE_DEGREES + longitude_degrees_for_meters(
+            meters_outside, CENTER_LATITUDE
+        )
+        position = GeoPosition(CENTER_LATITUDE, longitude, accuracy_meters)
+        return self.evaluator.evaluate(reading(position=position), self.assignment, self.rules)
+
+    def test_position_within_tolerance_with_zero_accuracy_does_not_violate(self):
+        self.assertEqual(self.evaluate_outside(20.0, 0.0), [])
+
+    def test_accuracy_widens_the_tolerance_of_a_position_outside_it(self):
+        self.assertEqual(self.evaluate_outside(40.0, 30.0), [])
+
+    def test_position_beyond_tolerance_plus_accuracy_violates(self):
+        violations = self.evaluate_outside(40.0, 5.0)
+
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].type, AlertType.GEOFENCE)
+        self.assertAlmostEqual(violations[0].distance_to_boundary_meters, 40.0, delta=1.0)
+
+    def test_missing_accuracy_counts_as_zero(self):
+        self.assertEqual(len(self.evaluate_outside(40.0, None)), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

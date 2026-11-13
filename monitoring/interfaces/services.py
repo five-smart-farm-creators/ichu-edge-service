@@ -30,7 +30,7 @@ class PositionRequest(BaseModel):
 
     latitude: float = Field(..., description="Latitude in decimal degrees.")
     longitude: float = Field(..., description="Longitude in decimal degrees.")
-    accuracy_meters: float | None = Field(None, description="Accuracy radius in meters.")
+    accuracy_meters: float = Field(..., ge=0, description="Accuracy radius in meters.")
 
 
 class TelemetryReadingCreateRequest(BaseModel):
@@ -45,6 +45,9 @@ class TelemetryReadingCreateRequest(BaseModel):
     activity_index: float | None = Field(None, description="Activity index.")
     battery_level: float | None = Field(None, description="Battery percentage.")
     position: PositionRequest | None = Field(None, description="GPS position.")
+    invalid_reasons: dict[str, str] | None = Field(
+        None, description="Reasons for failed measurements, keyed by field name."
+    )
 
 
 def _iso_utc(value: datetime) -> str:
@@ -71,6 +74,7 @@ def _reading_payload(reading: TelemetryReading) -> dict[str, Any]:
             "longitude": position.longitude,
             "accuracy_meters": position.accuracy_meters,
         },
+        "invalid_reasons": reading.invalid_reasons.as_dict(),
         "sync_status": reading.sync_status.value,
     }
 
@@ -130,6 +134,7 @@ def create_telemetry_reading():
             reading_request.activity_index,
             reading_request.battery_level,
             position,
+            reading_request.invalid_reasons,
         )
     except DeviceAuthenticationFailed:
         return jsonify({"error": "Invalid device_id or API key"}), 401

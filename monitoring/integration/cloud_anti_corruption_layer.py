@@ -12,6 +12,7 @@ from monitoring.domain.value_objects import (
     Coordinate,
     DeviceAssignment,
     Geofence,
+    GeoPosition,
     MonitoredMetric,
     Threshold,
 )
@@ -83,30 +84,54 @@ def _iso_utc(value: datetime) -> str:
 
 
 def _reading_to_contract(reading: TelemetryReading) -> dict[str, Any]:
-    position = reading.position
+    reasons = reading.invalid_reasons
     return {
         "readingId": str(reading.reading_id),
         "deviceId": reading.device_id,
         "recordedAt": _iso_utc(reading.recorded_at.value),
-        "bodyTemperature": None
-        if reading.body_temperature is None
-        else {"value": reading.body_temperature.celsius, "invalidReason": None},
-        "activityIndex": None
-        if reading.activity_index is None
-        else {"value": reading.activity_index.value, "invalidReason": None},
+        "bodyTemperature": _measurement_to_contract(
+            None if reading.body_temperature is None else reading.body_temperature.celsius,
+            reasons.reason_for("body_temperature"),
+        ),
+        "activityIndex": _measurement_to_contract(
+            None if reading.activity_index is None else reading.activity_index.value,
+            reasons.reason_for("activity_index"),
+        ),
         "ruminationMinutes": None,
-        "batteryLevel": None
-        if reading.battery_level is None
-        else {"value": reading.battery_level.percent, "invalidReason": None},
-        "position": None
-        if position is None
-        else {
+        "batteryLevel": _measurement_to_contract(
+            None if reading.battery_level is None else reading.battery_level.percent,
+            reasons.reason_for("battery_level"),
+        ),
+        "position": _position_to_contract(reading.position, reasons.reason_for("position")),
+    }
+
+
+def _measurement_to_contract(value: float | None, reason: str | None) -> dict[str, Any] | None:
+    """A failed sensor keeps its envelope so the cloud sees the reason; an absent field is ``None``."""
+    if value is not None:
+        return {"value": value, "invalidReason": None}
+    if reason is not None:
+        return {"value": None, "invalidReason": reason}
+    return None
+
+
+def _position_to_contract(position: GeoPosition | None, reason: str | None) -> dict[str, Any] | None:
+    """A failed fix keeps the cloud's four position keys, with the coordinates and accuracy null."""
+    if position is not None:
+        return {
             "latitude": position.latitude,
             "longitude": position.longitude,
             "accuracyMeters": position.accuracy_meters,
             "invalidReason": None,
-        },
-    }
+        }
+    if reason is not None:
+        return {
+            "latitude": None,
+            "longitude": None,
+            "accuracyMeters": None,
+            "invalidReason": reason,
+        }
+    return None
 
 
 def _alert_to_contract(alert: MonitoringAlert) -> dict[str, Any]:

@@ -14,6 +14,7 @@ from monitoring.domain.value_objects import (
     DeviceAssignment,
     Geofence,
     GeoPosition,
+    InvalidMeasurementReasons,
     MonitoredMetric,
     RecordedAt,
     SyncStatus,
@@ -68,6 +69,47 @@ class PositionValueObjectTestCase(unittest.TestCase):
         self.assertEqual(GeoPosition(-16.5, -68.1, 4.0).accuracy_meters, 4.0)
         with self.assertRaises(ValueError):
             GeoPosition(-16.5, -68.1, -1.0)
+
+
+class InvalidMeasurementReasonsTestCase(unittest.TestCase):
+    def test_reasons_are_stripped_and_looked_up_by_field(self):
+        reasons = InvalidMeasurementReasons({"body_temperature": "  Sensor did not respond  "})
+        self.assertEqual(reasons.reason_for("body_temperature"), "Sensor did not respond")
+        self.assertIsNone(reasons.reason_for("battery_level"))
+        self.assertEqual(reasons.fields(), frozenset({"body_temperature"}))
+        self.assertEqual(reasons.as_dict(), {"body_temperature": "Sensor did not respond"})
+
+    def test_empty_reasons_are_falsy(self):
+        self.assertFalse(InvalidMeasurementReasons())
+        self.assertFalse(InvalidMeasurementReasons(None))
+        self.assertTrue(InvalidMeasurementReasons({"position": "GPS module offline"}))
+
+    def test_rejects_unknown_fields_and_blank_non_text_or_overlong_reasons(self):
+        cases = (
+            {"heart_rate": "Sensor did not respond"},
+            {"body_temperature": 42},
+            {"body_temperature": "   "},
+            {"body_temperature": "x" * 201},
+        )
+        for reasons in cases:
+            with self.subTest(reasons=reasons):
+                with self.assertRaises(ValueError):
+                    InvalidMeasurementReasons(reasons)
+
+    def test_reason_of_exactly_200_characters_is_accepted(self):
+        reason = "x" * 200
+        self.assertEqual(InvalidMeasurementReasons({"position": reason}).reason_for("position"), reason)
+
+    def test_equality_and_order_ignore_insertion_order(self):
+        first = InvalidMeasurementReasons(
+            {"position": "GPS module offline", "body_temperature": "Sensor did not respond"}
+        )
+        second = InvalidMeasurementReasons(
+            {"body_temperature": "Sensor did not respond", "position": "GPS module offline"}
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(hash(first), hash(second))
+        self.assertEqual(list(first.as_dict()), ["body_temperature", "position"])
 
 
 class TimeAndIdentityValueObjectTestCase(unittest.TestCase):
@@ -162,6 +204,46 @@ class TelemetryReadingTestCase(unittest.TestCase):
         first = TelemetryReading.record(self.device, "event-6", None, 38.5, None, None, None)
         second = TelemetryReading.record(self.device, "event-6", None, 38.5, None, None, None)
         self.assertTrue(first.same_telemetry_as(second))
+
+    def test_field_cannot_carry_both_a_value_and_an_invalid_reason(self):
+        with self.assertRaises(ValueError):
+            TelemetryReading.record(
+                self.device,
+                "event-7",
+                None,
+                38.5,
+                None,
+                None,
+                None,
+                {"body_temperature": "Sensor did not respond"},
+            )
+
+    def test_reading_with_only_invalid_reasons_is_valid(self):
+        reading = TelemetryReading.record(
+            self.device,
+            "event-8",
+            None,
+            None,
+            None,
+            None,
+            None,
+            {"body_temperature": "Sensor did not respond"},
+        )
+        self.assertIsNone(reading.body_temperature)
+        self.assertEqual(reading.invalid_reasons.reason_for("body_temperature"), "Sensor did not respond")
+
+    def test_same_telemetry_compares_invalid_reasons(self):
+        original = TelemetryReading.record(
+            self.device, "event-9", None, None, 40.0, None, None, {"battery_level": "Battery sensor offline"}
+        )
+        retry = TelemetryReading.record(
+            self.device, "event-9", None, None, 40.0, None, None, {"battery_level": "Battery sensor offline"}
+        )
+        other_reason = TelemetryReading.record(
+            self.device, "event-9", None, None, 40.0, None, None, {"battery_level": "Charger unplugged"}
+        )
+        self.assertTrue(original.same_telemetry_as(retry))
+        self.assertFalse(original.same_telemetry_as(other_reason))
 
 
 class MonitoringAlertTestCase(unittest.TestCase):

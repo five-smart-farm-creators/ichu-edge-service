@@ -1,6 +1,7 @@
 """Value objects and enumerations for the Monitoring bounded context."""
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -186,6 +187,47 @@ class GeoPosition:
     def coordinate(self) -> Coordinate:
         """Return the position without its accuracy."""
         return Coordinate(self.latitude, self.longitude)
+
+
+MEASUREMENT_FIELDS = frozenset({"body_temperature", "activity_index", "battery_level", "position"})
+_MAX_REASON_LENGTH = 200
+
+
+@dataclass(frozen=True, init=False)
+class InvalidMeasurementReasons:
+    """Why the collar could not capture some measurements, keyed by measurement field."""
+
+    _pairs: tuple[tuple[str, str], ...]
+
+    def __init__(self, reasons: Mapping[str, str] | None = None) -> None:
+        """Validate each reason and store the pairs sorted, so equality ignores insertion order."""
+        pairs: list[tuple[str, str]] = []
+        for field, reason in (reasons or {}).items():
+            if field not in MEASUREMENT_FIELDS:
+                raise ValueError(f"Unknown measurement field: {field}")
+            if not isinstance(reason, str):
+                raise ValueError(f"Invalid reason for {field}: must be a string")
+            stripped = reason.strip()
+            if not stripped or len(stripped) > _MAX_REASON_LENGTH:
+                raise ValueError(f"Invalid reason for {field}: must have 1 to 200 characters")
+            pairs.append((field, stripped))
+        object.__setattr__(self, "_pairs", tuple(sorted(pairs)))
+
+    def reason_for(self, field: str) -> str | None:
+        """Return the reason a measurement is invalid, or ``None`` when it is not."""
+        return self.as_dict().get(field)
+
+    def fields(self) -> frozenset[str]:
+        """Return the measurement fields that carry a reason."""
+        return frozenset(field for field, _ in self._pairs)
+
+    def as_dict(self) -> dict[str, str]:
+        """Return the reasons keyed by field, in field order."""
+        return dict(self._pairs)
+
+    def __bool__(self) -> bool:
+        """Return whether any measurement carries a reason."""
+        return bool(self._pairs)
 
 
 @dataclass(frozen=True)

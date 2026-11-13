@@ -2,6 +2,7 @@
 
 import logging
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Callable, Protocol
@@ -152,6 +153,7 @@ class TelemetryIngestionService:
         activity_index: float | None,
         battery_level: float | None,
         position: GeoPosition | None,
+        invalid_reasons: Mapping[str, str] | None = None,
     ) -> IngestionResult:
         """Accept one telemetry submission and raise local alerts; retries return the stored reading."""
         submitting_device = self._iam.authenticated_submitting_device(device_id, api_key)
@@ -165,6 +167,7 @@ class TelemetryIngestionService:
             activity_index,
             battery_level,
             position,
+            invalid_reasons,
         )
         saved = self._readings.save_idempotently(reading)
         if not saved.created:
