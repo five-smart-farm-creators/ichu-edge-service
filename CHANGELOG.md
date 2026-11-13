@@ -24,6 +24,8 @@ individually.
 - `invalid_reasons` in telemetry readings: a collar reports why a measurement it could not capture is
   missing. The reason is stored, echoed in the response, and sent to the cloud as `invalidReason`.
   Existing databases gain the column when the service starts.
+- Collar simulator, `scripts/simulate_collar.py`, which sends the firmware telemetry JSON with its
+  retry rules to the edge, for tests without hardware.
 
 ### Changed
 

@@ -275,6 +275,61 @@ Life stages come from the cloud Cattle Information values (`Calf`, `Heifer`,
 > These devices are for local development only. Do not enable development seeding
 > or reuse development credentials in production or on a real ranch deployment.
 
+## Collar Simulator
+
+`scripts/simulate_collar.py` sends the telemetry JSON of the collar firmware
+(`TelemetryPayload.cpp`) to the edge, with the same retry rules: the `event_id` stays the
+same on every retry, a `200` or `201` confirms the reading, and a `400` or `409` is a final
+rejection. Use it to test the collar, edge, and cloud path without hardware or Wokwi. It only
+needs `requests`, which is already in `requirements.txt`.
+
+Modes (`--mode`):
+
+- `normal`: body temperature from 38.3 to 39.0 °C, inside the development lot.
+- `fever`: body temperature from 40.0 to 40.6 °C, above the 39.5 °C maximum of the development rule.
+- `escape`: a position about 2 km outside the development lot.
+- `sensor-failure`: no `body_temperature`, and `invalid_reasons` reports the failed sensor.
+
+Run `python scripts/simulate_collar.py --help` for `--edge-url`, `--device-id`, `--count`,
+`--interval`, and `--seed`.
+
+The simulator reads the collar key from `DEVICE_API_KEY`, or from `DEVELOPMENT_DEVICE_API_KEY`
+when that is not set, and never prints it. The default device is the development collar
+`9d4a5f3b-3a6e-4f84-8daa-4e5f6a7b8c93`, so its key must be the one registered with seeding.
+
+Store the key once as a user environment variable (replace the placeholder):
+
+```powershell
+[Environment]::SetEnvironmentVariable("DEVICE_API_KEY", "<collar api key>", "User")
+```
+
+Then load it into each new PowerShell session and run the simulator:
+
+```powershell
+$env:DEVICE_API_KEY = [Environment]::GetEnvironmentVariable('DEVICE_API_KEY','User')
+.\.venv\Scripts\python scripts\simulate_collar.py --mode fever
+```
+
+bash: the prompt reads the key without echoing it, so it stays out of the command line and the
+shell history.
+
+```sh
+read -rsp 'Collar API key: ' DEVICE_API_KEY && echo
+export DEVICE_API_KEY
+python scripts/simulate_collar.py --mode fever
+```
+
+Expected output for `--mode fever`:
+
+```text
+sim-9d4a5f3b-3f2a9c1e-000001 201 alerts=Temperature/Critical
+```
+
+The edge answers `201` with a `Temperature/Critical` alert when the collar has a synchronized
+assignment and rules (see [Synchronization with the Cloud](#synchronization-with-the-cloud)).
+Without an assignment, it answers `201` with `alerts=-`. The script exits with `0` when every
+reading gets `200` or `201`, with `1` when a reading fails, and with `2` when no key is set.
+
 ## API Contract
 
 Device-facing payloads use `snake_case`. The status and synchronization responses
