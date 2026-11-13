@@ -24,6 +24,7 @@ match the bounded contexts IAM and Monitoring.
 | TS-EDGE-006 | Synchronize with the ICHU Cloud API | Monitoring | `monitoring/application/services.py`: `SynchronizationService`; `monitoring/integration/cloud_anti_corruption_layer.py`: `IchuCloudAntiCorruptionLayer`, `DisabledCloudAntiCorruptionLayer`; `monitoring/infrastructure/cloud_client.py`: `IchuCloudClient`; `monitoring/interfaces/services.py`: `synchronize`; `monitoring/interfaces/commands.py`: `synchronize_command`, `run_synchronizer`, `next_delay_seconds` |
 | TS-EDGE-007 | Bootstrap Storage and Configuration | Application bootstrap; shared infrastructure | `app.py`: `create_app`, `seed_development_data`; `config.py`: `load_config`; `shared/infrastructure/database.py`: `configure_database`, `init_db` |
 | TS-EDGE-008 | Refresh Collar Assignments from the Cloud | Monitoring; IAM | `monitoring/integration/cloud_anti_corruption_layer.py`: `IchuCloudAntiCorruptionLayer.fetch_assignments`; `monitoring/application/services.py`: `SynchronizationService.refresh_assignments`; `monitoring/infrastructure/repositories.py`: `DeviceAssignmentRepository.replace_all`; `iam/interfaces/commands.py`: `register_device_command` |
+| TS-EDGE-009 | Report Sensor Failures and GPS Accuracy | Monitoring | `monitoring/interfaces/services.py`: `PositionRequest`, `TelemetryReadingCreateRequest`; `monitoring/domain/value_objects.py`: `InvalidMeasurementReasons`; `monitoring/domain/entities.py`: `TelemetryReading.record`; `monitoring/domain/services.py`: `RuleEvaluator._geofence_violations`; `monitoring/integration/cloud_anti_corruption_layer.py`: `_reading_to_contract` |
 
 ---
 
@@ -312,3 +313,41 @@ Acceptance criteria:
   - When an operator runs `flask --app app register-device D` with `DEVICE_API_KEY` set to the key of `D`
   - Then `D` authenticates with that key
   - And a second run reports that `D` is already registered and changes nothing
+
+---
+
+### TS-EDGE-009 — Report Sensor Failures and GPS Accuracy
+
+As a ranch operator, I want a collar to report the measurements it could not capture and the GPS
+accuracy of each position so that a sensor fault is not mistaken for a normal reading and a GPS
+error does not raise a false geofence alert.
+
+Acceptance criteria:
+
+- Scenario: Failed temperature sensor
+  - Given a device assigned to a life stage with a body temperature threshold
+  - When the device submits a reading with an activity index and an `invalid_reasons` entry for
+    `body_temperature`, without a body temperature
+  - Then the response is `201 Created` and echoes the `invalid_reasons`
+  - And no `Temperature` alert is raised
+  - And the next synchronization sends the body temperature with a `null` value and the `invalidReason`
+
+- Scenario: Measurement with both a value and a reason
+  - Given a collar submits a body temperature of 38.5 with an `invalid_reasons` entry for `body_temperature`
+  - When the gateway validates the reading
+  - Then the response is `400 Bad Request`
+
+- Scenario: Position within the geofence tolerance
+  - Given a device assigned to a lot with a geofence of 25 m tolerance
+  - When the device reports a position 20 m outside the polygon with an accuracy of 0 m
+  - Then no alert is raised
+
+- Scenario: Position beyond the tolerance but within the GPS accuracy
+  - Given the same geofence
+  - When the device reports a position 40 m outside the polygon with an accuracy of 30 m
+  - Then no alert is raised
+
+- Scenario: Position beyond the tolerance plus the GPS accuracy
+  - Given the same geofence
+  - When the device reports a position 40 m outside the polygon with an accuracy of 5 m
+  - Then a `Geofence` alert is raised
