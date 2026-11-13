@@ -309,11 +309,12 @@ class SynchronizationService:
         """Persist the state that each cloud answer implies and count the outcomes."""
         readings_by_id = {str(reading.reading_id): reading for reading in readings}
         alerts_by_id = {str(alert.alert_id): alert for alert in alerts}
-        handled: set[str] = set()
+        handled: set[tuple[str, str]] = set()
         for entry in entries:
-            if entry.status not in _ANSWERED_STATUSES or entry.entry_id in handled:
-                continue
             kind = entry.kind.casefold()
+            identity = (kind, entry.entry_id)
+            if entry.status not in _ANSWERED_STATUSES or identity in handled:
+                continue
             if kind == "reading" and entry.entry_id in readings_by_id:
                 settled = self._answered(readings_by_id[entry.entry_id], entry)
                 self._readings.update_sync_status(settled)
@@ -322,7 +323,7 @@ class SynchronizationService:
                 self._alerts.update_sync_status(settled)
             else:
                 continue
-            handled.add(entry.entry_id)
+            handled.add(identity)
             outcome[settled.sync_status] += 1
 
     def _answered(

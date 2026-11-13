@@ -308,6 +308,21 @@ class SynchronizationServiceTestCase(unittest.TestCase):
         self.assertEqual(1, readings.readings[reading.reading_id].sync_attempts)
         self.assertEqual(SyncStatus.PENDING, readings.readings[reading.reading_id].sync_status)
 
+    def test_same_identifier_in_different_entry_kinds_is_acknowledged_separately(self):
+        from dataclasses import replace
+        reading = make_reading("shared-id", 38.5)
+        alert = MonitoringAlert.raise_for(DEVICE_ID, AlertType.TEMPERATURE,
+            AlertSeverity.WARNING, (reading.reading_id,), 3, NOW, 37.5, 39.5)
+        alert = replace(alert, alert_id=reading.reading_id)
+        readings = FakeReadingRepository([reading])
+        alerts = FakeAlertRepository([alert])
+        cloud = FakeCloudGateway(batch_results=[
+            CloudEntryResult("Reading", str(reading.reading_id), "Accepted"),
+            CloudEntryResult("Alert", str(alert.alert_id), "Accepted")])
+        service = SynchronizationService(cloud, readings, alerts, FakeRuleRepository(), batch_size=10)
+
+        self.assertEqual(2, service.push_pending().synced)
+
     def test_explicit_permanent_conflict_is_not_retried(self):
         reading = make_reading("permanent", 38.5)
         readings = FakeReadingRepository([reading])
