@@ -97,6 +97,8 @@ class CloudEntryResult:
     entry_id: str
     status: str
     reason: str | None = None
+    code: str | None = None
+    retryable: bool = False
 
 
 class CloudGateway(Protocol):
@@ -330,8 +332,11 @@ class SynchronizationService:
         if entry.status in _ACCEPTED_STATUSES:
             return record.mark_synced()
         reason = self._rejection_reason(entry.reason)
-        if entry.status in _REJECTED_STATUSES:
+        if entry.retryable:
+            return record.defer_retry(reason, MAX_SYNC_ATTEMPTS)
+        if entry.status in _REJECTED_STATUSES or entry.code is not None:
             return record.mark_rejected(reason)
+        # Older backends omit retry metadata; preserve the worker's bounded conflict retries.
         return record.defer_retry(reason, MAX_SYNC_ATTEMPTS)
 
     def synchronize(self) -> SynchronizationResult:

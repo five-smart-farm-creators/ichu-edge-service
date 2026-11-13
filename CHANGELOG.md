@@ -12,6 +12,7 @@ individually.
 ### Fixed
 
 - Apply the synchronization batch limit to readings and alerts together.
+- Use explicit cloud retry metadata while preserving bounded legacy retries; reject malformed acknowledgement metadata.
 
 ### Added
 

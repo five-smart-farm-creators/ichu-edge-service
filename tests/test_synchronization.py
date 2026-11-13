@@ -293,6 +293,36 @@ class SynchronizationServiceTestCase(unittest.TestCase):
         self.assertEqual((result.sent_readings, result.sent_alerts), (1, 0))
         self.assertEqual(SyncStatus.PENDING, alerts.alerts[alert.alert_id].sync_status)
 
+    def test_retryable_conflict_keeps_entry_pending(self):
+        reading = make_reading("retryable", 38.5)
+        readings = FakeReadingRepository([reading])
+        cloud = FakeCloudGateway(batch_results=[CloudEntryResult("Reading",
+            str(reading.reading_id), "Conflict", "Concurrent save",
+            code="OperationsMonitoring.ReadingConcurrentlyStored", retryable=True)])
+        service = SynchronizationService(cloud, readings, FakeAlertRepository([]),
+            FakeRuleRepository(), batch_size=10)
+
+        result = service.push_pending()
+
+        self.assertEqual((result.synced, result.rejected, result.deferred), (0, 0, 1))
+        self.assertEqual(1, readings.readings[reading.reading_id].sync_attempts)
+        self.assertEqual(SyncStatus.PENDING, readings.readings[reading.reading_id].sync_status)
+
+    def test_explicit_permanent_conflict_is_not_retried(self):
+        reading = make_reading("permanent", 38.5)
+        readings = FakeReadingRepository([reading])
+        cloud = FakeCloudGateway(batch_results=[CloudEntryResult("Reading",
+            str(reading.reading_id), "Conflict", "Different capture",
+            code="OperationsMonitoring.ReadingIdentifierConflict", retryable=False)])
+        service = SynchronizationService(cloud, readings, FakeAlertRepository([]),
+            FakeRuleRepository(), batch_size=10)
+
+        result = service.push_pending()
+
+        self.assertEqual((result.rejected, result.deferred), (1, 0))
+        self.assertEqual(SyncStatus.REJECTED, readings.readings[reading.reading_id].sync_status)
+        self.assertEqual(0, readings.readings[reading.reading_id].sync_attempts)
+
     def test_disabled_gateway_refuses_every_call(self):
         gateway = DisabledCloudAntiCorruptionLayer()
 
@@ -373,6 +403,30 @@ class IchuCloudClientTestCase(unittest.TestCase):
         self.assertEqual(method, "POST")
         self.assertEqual(url, "https://cloud.example.org/api/v1/telemetry/batch")
         self.assertEqual(kwargs["headers"]["X-Gateway-Key"], "gateway-test-key")
+
+
+class SynchronizationContractTestCase(unittest.TestCase):
+    def test_retryable_outcomes_cross_the_cloud_contract_boundary(self):
+        session = FakeSession(response=FakeResponse(200, {"results": [{
+            "kind": "Reading", "id": str(uuid.uuid4()), "status": "Conflict",
+            "code": "OperationsMonitoring.ReadingConcurrentlyStored", "retryable": True,
+        }]}))
+        gateway = IchuCloudAntiCorruptionLayer(make_client(session))
+
+        outcome = gateway.send_batch([], [])[0]
+
+        self.assertTrue(outcome.retryable)
+        self.assertEqual("OperationsMonitoring.ReadingConcurrentlyStored", outcome.code)
+
+    def test_malformed_outcome_metadata_and_missing_results_are_refused(self):
+        invalid = {"results": [{"kind": "Reading", "id": str(uuid.uuid4()),
+            "status": "Conflict", "retryable": "false"}]}
+        for payload in ({}, invalid):
+            with self.subTest(payload=payload):
+                gateway = IchuCloudAntiCorruptionLayer(make_client(
+                    FakeSession(response=FakeResponse(200, payload))))
+                with self.assertRaises(CloudUnavailable):
+                    gateway.send_batch([], [])
 
 
 class SynchronizationCredentialsTestCase(unittest.TestCase):

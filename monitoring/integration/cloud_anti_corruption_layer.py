@@ -110,22 +110,28 @@ def _alert_to_contract(alert: MonitoringAlert) -> dict[str, Any]:
 
 
 def _entry_results_from_contract(response: dict[str, Any]) -> list[CloudEntryResult]:
-    entries = response.get("results", [])
+    entries = response.get("results")
     if not isinstance(entries, list):
         raise CloudUnavailable("The ICHU cloud API returned an unexpected batch answer")
     results: list[CloudEntryResult] = []
     for entry in entries:
         try:
             reason = entry.get("reason")
+            code = entry.get("code")
+            retryable = entry.get("retryable", False)
+            if not isinstance(retryable, bool) or (code is not None and not isinstance(code, str)):
+                raise ValueError("Invalid synchronization outcome metadata")
             results.append(
                 CloudEntryResult(
                     kind=str(entry["kind"]),
                     entry_id=str(entry["id"]),
                     status=str(entry["status"]),
                     reason=None if reason is None else str(reason),
+                    code=code,
+                    retryable=retryable,
                 )
             )
-        except (KeyError, TypeError, AttributeError) as error:
+        except (KeyError, TypeError, AttributeError, ValueError) as error:
             raise CloudUnavailable(
                 "The ICHU cloud API returned an unexpected batch answer"
             ) from error
