@@ -507,7 +507,7 @@ The PowerShell user variable is available in new terminals; the bash `export` la
 shell only.
 
 A gateway key has the form `{gatewayId}.{secret}`. The backend returns it once, when the gateway is
-registered with `POST /api/v1/ranches/{ranchId}/edge-gateways`, and stores only a hash of the secret.
+registered with `POST /api/v1/edge-gateways?ranchId=...`, and stores only a hash of the secret.
 The service reads the gateway id from the key, so no separate gateway id is configured. The key of the
 gateway seeded in the backend's development data is for local development only and must never be used
 on a real deployment.
@@ -600,3 +600,17 @@ Environment configuration defaults:
 ## License
 
 This project is proprietary. See [`LICENSE.md`](LICENSE.md) for details.
+
+## Local backend contract review
+
+The combined number of readings and alerts is bounded by `SYNC_BATCH_SIZE`.
+Gateway results may add a stable `code` and a boolean `retryable` flag. Explicit
+retryable failures use the existing worker's bounded retry policy; explicit
+permanent conflicts are rejected immediately. Legacy responses without metadata
+retain the existing conflict retry behavior. Acknowledgements are correlated by
+both entry kind and identifier, and malformed metadata leaves records pending.
+
+The periodic worker, SQLite WAL mode, derived gateway identifier, refused-batch
+splitting, and retry-attempt persistence already present in develop are preserved.
+See the [backend review report](https://github.com/five-smart-farm-creators/ichu-web-service/blob/fix/local-backend-readiness/docs/local-fixes-report.md)
+for the complete endpoint migration, verification, and related fixes branch.

@@ -26,6 +26,7 @@ individually.
 ### Changed
 
 - Allow lowercase fix/<description> branches targeting develop with separate Conventional Commits.
+- Update the gateway registry route and link the related backend review report.
 - Documented the backend gateway key format `{gatewayId}.{secret}` and the key of the
   seeded development gateway, which replaces the backend's development simulation.
 - The gateway id is derived from `EDGE_GATEWAY_KEY`; `EDGE_GATEWAY_ID` is removed.
