@@ -16,6 +16,6 @@ class DeviceRepository(Protocol):
         """Persist a device aggregate's current state."""
         ...
 
-    def get_or_create_device(self, device_id: str, api_key: str) -> Device:
-        """Retrieve or create the identified device."""
+    def get_or_create_device(self, device_id: str, api_key: str) -> tuple[Device, bool]:
+        """Retrieve or create the identified device, reporting whether it was created."""
         ...

@@ -1,6 +1,5 @@
 """Flask application entry point for the ICHU Edge Service."""
 
-import uuid
 from datetime import timedelta
 from pathlib import Path
 
@@ -9,6 +8,7 @@ from flask import Flask
 from config import AppConfig, load_config
 from iam.application.services import AuthApplicationService
 from iam.infrastructure.repositories import DeviceRepository
+from iam.interfaces.commands import register_device_command
 from iam.interfaces.services import iam_api
 from monitoring.application.services import (
     CloudGateway,
@@ -17,7 +17,6 @@ from monitoring.application.services import (
     TelemetryIngestionService,
 )
 from monitoring.domain.services import RuleEvaluator
-from monitoring.domain.value_objects import DeviceAssignment
 from monitoring.infrastructure.cloud_client import IchuCloudClient
 from monitoring.infrastructure.repositories import (
     DeviceAssignmentRepository,
@@ -35,11 +34,10 @@ from monitoring.interfaces.services import monitoring_api
 from shared.infrastructure.database import configure_database, db, init_db
 from shared.interfaces.status import status_api
 
-DEVELOPMENT_LOT_ID = uuid.UUID("6a1f2c0e-0d3b-4c51-9a77-1b2c3d4e5f60")
-DEVELOPMENT_DEVICES = (
-    ("9d4a5f3b-3a6e-4f84-8daa-4e5f6a7b8c93", DEVELOPMENT_LOT_ID, "MilkingCow"),
-    ("ae5b6a4c-4b7f-4a95-9ebb-5f6a7b8c9da4", DEVELOPMENT_LOT_ID, "Heifer"),
-    ("bf6c7b5d-5c8a-4ba6-8fcc-6a7b8c9daeb5", None, None),
+DEVELOPMENT_DEVICE_IDS = (
+    "9d4a5f3b-3a6e-4f84-8daa-4e5f6a7b8c93",
+    "ae5b6a4c-4b7f-4a95-9ebb-5f6a7b8c9da4",
+    "bf6c7b5d-5c8a-4ba6-8fcc-6a7b8c9daeb5",
 )
 
 
@@ -59,6 +57,7 @@ def create_app() -> Flask:
     app.register_blueprint(iam_api)
     app.register_blueprint(monitoring_api)
     app.cli.add_command(synchronize_command)
+    app.cli.add_command(register_device_command)
 
     iam_service = AuthApplicationService(device_repository)
     iam_acl = IamAntiCorruptionLayer(iam_service)
@@ -86,15 +85,12 @@ def create_app() -> Flask:
         reading_repository,
         alert_repository,
         rule_repository,
+        assignment_repository,
         settings["SYNC_BATCH_SIZE"],
     )
 
     if settings["SEED_DEVELOPMENT_DATA"]:
-        seed_development_data(
-            iam_service,
-            assignment_repository,
-            settings["DEVELOPMENT_DEVICE_API_KEY"],
-        )
+        seed_development_data(iam_service, settings["DEVELOPMENT_DEVICE_API_KEY"])
 
     @app.teardown_appcontext
     def close_database(_exception: BaseException | None) -> None:
@@ -104,16 +100,10 @@ def create_app() -> Flask:
     return app
 
 
-def seed_development_data(
-    iam_service: AuthApplicationService,
-    assignment_repository: DeviceAssignmentRepository,
-    api_key: str,
-) -> None:
-    """Register the development devices and their lot assignments."""
-    for device_id, lot_id, life_stage in DEVELOPMENT_DEVICES:
+def seed_development_data(iam_service: AuthApplicationService, api_key: str) -> None:
+    """Register the development devices; their lots and life stages arrive from the cloud."""
+    for device_id in DEVELOPMENT_DEVICE_IDS:
         iam_service.get_or_create_device(device_id, api_key)
-        if lot_id is not None and assignment_repository.find(device_id) is None:
-            assignment_repository.save(DeviceAssignment(device_id, lot_id, life_stage))
 
 
 def _cloud_gateway(settings: AppConfig) -> CloudGateway:
