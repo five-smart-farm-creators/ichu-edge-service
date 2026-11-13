@@ -26,6 +26,7 @@ from monitoring.domain.value_objects import (
     AlertSeverity,
     AlertType,
     DeviceAssignment,
+    GeoPosition,
     MonitoredMetric,
     SyncStatus,
     Threshold,
@@ -446,6 +447,60 @@ class CloudAssignmentTranslationTestCase(unittest.TestCase):
                     self.fetch(payload)
 
 
+class ReadingContractTranslationTestCase(unittest.TestCase):
+    def contract_of(self, reading):
+        session = FakeSession(response=FakeResponse(200, {"results": []}))
+        IchuCloudAntiCorruptionLayer(make_client(session)).send_batch([reading], [])
+        return session.calls[0][2]["json"]["readings"][0]
+
+    def test_failed_fields_are_sent_with_their_invalid_reason_and_no_value(self):
+        reading = TelemetryReading.record(
+            SubmittingDevice(DEVICE_ID),
+            "event-contract-1",
+            NOW,
+            None,
+            42.0,
+            None,
+            None,
+            {"body_temperature": "Sensor did not respond", "position": "GPS module offline"},
+        )
+
+        contract = self.contract_of(reading)
+
+        self.assertEqual(
+            contract["bodyTemperature"], {"value": None, "invalidReason": "Sensor did not respond"}
+        )
+        self.assertEqual(contract["activityIndex"], {"value": 42.0, "invalidReason": None})
+        self.assertIsNone(contract["batteryLevel"])
+        self.assertEqual(
+            contract["position"],
+            {
+                "latitude": None,
+                "longitude": None,
+                "accuracyMeters": None,
+                "invalidReason": "GPS module offline",
+            },
+        )
+
+    def test_captured_position_is_sent_with_its_accuracy(self):
+        reading = TelemetryReading.record(
+            SubmittingDevice(DEVICE_ID),
+            "event-contract-2",
+            NOW,
+            38.5,
+            None,
+            None,
+            GeoPosition(-16.5, -68.1, 4.0),
+        )
+
+        contract = self.contract_of(reading)
+
+        self.assertEqual(
+            contract["position"],
+            {"latitude": -16.5, "longitude": -68.1, "accuracyMeters": 4.0, "invalidReason": None},
+        )
+
+
 class SynchronizationCredentialsTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -572,6 +627,82 @@ class LegacySchemaMigrationTestCase(unittest.TestCase):
         self.assertIn("sync_attempts", reading_columns)
         self.assertIn("sync_attempts", alert_columns)
         self.assertEqual([reading.sync_attempts for reading in pending], [0])
+
+    def test_databases_created_before_invalid_reasons_load_them_as_empty(self):
+        with tempfile.TemporaryDirectory(prefix="ichu-edge-migration-", ignore_cleanup_errors=True) as directory:
+            configure_database(os.path.join(directory, "v020.db"))
+            try:
+                db.execute_sql(LEGACY_READINGS_TABLE)
+                db.execute_sql(
+                    "INSERT INTO telemetry_readings (reading_id, device_id, event_id, recorded_at, "
+                    "timestamp_supplied, body_temperature, sync_status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (str(uuid.uuid4()), DEVICE_ID, "legacy-event-2", "2026-11-07 12:00:00", 1, 38.5, "pending"),
+                )
+
+                TelemetryReadingRepository().migrate_schema()
+                reading_columns = {column.name for column in db.get_columns("telemetry_readings")}
+                pending = TelemetryReadingRepository().find_pending(10)
+            finally:
+                db.close()
+
+        self.assertIn("invalid_reasons", reading_columns)
+        self.assertEqual([reading.invalid_reasons.as_dict() for reading in pending], [{}])
+
+
+class TelemetryReadingRepositoryTestCase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.directory = tempfile.TemporaryDirectory(prefix="ichu-edge-readings-", ignore_cleanup_errors=True)
+        environment = {
+            "APP_ENV": "development",
+            "DATABASE_PATH": os.path.join(cls.directory.name, "readings.db"),
+            "SEED_DEVELOPMENT_DATA": "false",
+            "CLOUD_API_BASE_URL": "",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            from app import create_app
+
+            create_app()
+
+    def test_invalid_reasons_survive_a_round_trip_and_are_stored_as_sorted_json(self):
+        repository = TelemetryReadingRepository()
+        reading = TelemetryReading.record(
+            SubmittingDevice(DEVICE_ID),
+            "event-stored-reasons-1",
+            NOW,
+            None,
+            42.0,
+            None,
+            None,
+            {"position": "GPS module offline", "body_temperature": "Sensor did not respond"},
+        )
+        repository.save_idempotently(reading)
+
+        stored = next(
+            item for item in repository.find_pending(100) if item.reading_id == reading.reading_id
+        )
+        raw = db.execute_sql(
+            "SELECT invalid_reasons FROM telemetry_readings WHERE event_id = ?",
+            ("event-stored-reasons-1",),
+        ).fetchone()[0]
+
+        self.assertEqual(stored.invalid_reasons, reading.invalid_reasons)
+        self.assertEqual(
+            raw, '{"body_temperature": "Sensor did not respond", "position": "GPS module offline"}'
+        )
+
+    def test_reading_without_invalid_reasons_stores_null(self):
+        reading = TelemetryReading.record(
+            SubmittingDevice(DEVICE_ID), "event-stored-reasons-2", NOW, 38.5, None, None, None
+        )
+        TelemetryReadingRepository().save_idempotently(reading)
+
+        raw = db.execute_sql(
+            "SELECT invalid_reasons FROM telemetry_readings WHERE event_id = ?",
+            ("event-stored-reasons-2",),
+        ).fetchone()[0]
+
+        self.assertIsNone(raw)
 
 
 class DeviceAssignmentRepositoryTestCase(unittest.TestCase):

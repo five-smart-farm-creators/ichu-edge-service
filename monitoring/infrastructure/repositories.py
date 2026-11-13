@@ -19,6 +19,7 @@ from monitoring.domain.value_objects import (
     DeviceAssignment,
     Geofence,
     GeoPosition,
+    InvalidMeasurementReasons,
     MonitoredMetric,
     RecordedAt,
     SyncStatus,
@@ -52,7 +53,7 @@ class TelemetryReadingRepository:
     """Persist and reconstruct telemetry readings with idempotent submission."""
 
     def migrate_schema(self) -> None:
-        """Add the attempt counter that databases created by v0.1.0 lack."""
+        """Add the columns that databases created by older versions lack."""
         database = TelemetryReadingModel._meta.database
         with database.atomic():
             columns = {column.name for column in database.get_columns("telemetry_readings")}
@@ -60,6 +61,10 @@ class TelemetryReadingRepository:
                 database.execute_sql(
                     'ALTER TABLE "telemetry_readings" '
                     'ADD COLUMN "sync_attempts" INTEGER NOT NULL DEFAULT 0'
+                )
+            if "invalid_reasons" not in columns:
+                database.execute_sql(
+                    'ALTER TABLE "telemetry_readings" ADD COLUMN "invalid_reasons" TEXT NULL'
                 )
 
     def save_idempotently(self, reading: TelemetryReading) -> ReadingSaveResult:
@@ -123,6 +128,7 @@ class TelemetryReadingRepository:
     @staticmethod
     def _values(reading: TelemetryReading) -> dict:
         position = reading.position
+        invalid_reasons = reading.invalid_reasons
         return {
             "reading_id": str(reading.reading_id),
             "device_id": reading.device_id,
@@ -135,6 +141,7 @@ class TelemetryReadingRepository:
             "latitude": None if position is None else position.latitude,
             "longitude": None if position is None else position.longitude,
             "accuracy_meters": None if position is None else position.accuracy_meters,
+            "invalid_reasons": json.dumps(invalid_reasons.as_dict()) if invalid_reasons else None,
             "sync_status": reading.sync_status.value,
             "rejection_reason": reading.rejection_reason,
             "sync_attempts": reading.sync_attempts,
@@ -145,6 +152,9 @@ class TelemetryReadingRepository:
         position = None
         if row.latitude is not None and row.longitude is not None:
             position = GeoPosition(row.latitude, row.longitude, row.accuracy_meters)
+        invalid_reasons = InvalidMeasurementReasons(
+            None if row.invalid_reasons is None else json.loads(row.invalid_reasons)
+        )
         return TelemetryReading.reconstitute(
             uuid.UUID(row.reading_id),
             SubmittingDevice(row.device_id),
@@ -155,6 +165,7 @@ class TelemetryReadingRepository:
             None if row.activity_index is None else ActivityIndex(row.activity_index),
             None if row.battery_level is None else BatteryLevel(row.battery_level),
             position,
+            invalid_reasons,
             SyncStatus(row.sync_status),
             row.rejection_reason,
             row.sync_attempts,

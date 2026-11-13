@@ -135,6 +135,7 @@ class TelemetryApiTestCase(ApiTestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json["reading"]["event_id"], "event-create-1")
         self.assertEqual(response.json["reading"]["recorded_at"], "2026-11-07T15:00:00Z")
+        self.assertEqual(response.json["reading"]["invalid_reasons"], {})
         self.assertEqual(response.json["reading"]["sync_status"], "pending")
         self.assertEqual(response.json["alerts"], [])
 
@@ -183,7 +184,7 @@ class TelemetryApiTestCase(ApiTestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_rejects_position_outside_its_range(self):
-        position = {"latitude": 95.0, "longitude": -68.1}
+        position = {"latitude": 95.0, "longitude": -68.1, "accuracy_meters": 4.0}
         response = self.post_reading(reading_payload("event-position-1", position=position))
 
         self.assertEqual(response.status_code, 400)
@@ -203,6 +204,82 @@ class TelemetryApiTestCase(ApiTestCase):
         )
 
         self.assertEqual(response.status_code, 415)
+
+    def test_rejects_position_without_accuracy(self):
+        position = {"latitude": -16.5, "longitude": -68.1}
+        response = self.post_reading(reading_payload("event-no-accuracy-1", position=position))
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_accepts_failed_sensor_with_its_reason_and_echoes_it(self):
+        response = self.post_reading(
+            reading_payload(
+                "event-invalid-1",
+                body_temperature=None,
+                activity_index=42.0,
+                invalid_reasons={"body_temperature": "Sensor did not respond"},
+            )
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertIsNone(response.json["reading"]["body_temperature"])
+        self.assertEqual(
+            response.json["reading"]["invalid_reasons"], {"body_temperature": "Sensor did not respond"}
+        )
+
+    def test_identical_retry_with_invalid_reasons_returns_the_original_reading(self):
+        payload = reading_payload(
+            "event-invalid-retry-1",
+            body_temperature=None,
+            invalid_reasons={"body_temperature": "Sensor did not respond"},
+        )
+        first = self.post_reading(payload)
+        retry = self.post_reading(payload)
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(retry.status_code, 200)
+        self.assertEqual(retry.json["reading"]["reading_id"], first.json["reading"]["reading_id"])
+
+    def test_reusing_event_id_with_another_reason_conflicts(self):
+        self.post_reading(
+            reading_payload(
+                "event-invalid-conflict-1",
+                body_temperature=None,
+                invalid_reasons={"body_temperature": "Sensor did not respond"},
+            )
+        )
+        conflicting = self.post_reading(
+            reading_payload(
+                "event-invalid-conflict-1",
+                body_temperature=None,
+                invalid_reasons={"body_temperature": "Probe unplugged"},
+            )
+        )
+
+        self.assertEqual(conflicting.status_code, 409)
+
+    def test_rejects_unknown_field_and_blank_or_overlong_reason(self):
+        for invalid_reasons in (
+            {"heart_rate": "Sensor did not respond"},
+            {"body_temperature": "   "},
+            {"body_temperature": "x" * 201},
+        ):
+            with self.subTest(invalid_reasons=invalid_reasons):
+                response = self.post_reading(
+                    reading_payload("event-invalid-field-1", body_temperature=None, invalid_reasons=invalid_reasons)
+                )
+
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json, {"error": "Invalid telemetry reading data"})
+
+    def test_rejects_value_and_reason_for_the_same_field(self):
+        response = self.post_reading(
+            reading_payload(
+                "event-invalid-both-1", invalid_reasons={"body_temperature": "Sensor did not respond"}
+            )
+        )
+
+        self.assertEqual(response.status_code, 400)
 
 
 class AlertsApiTestCase(ApiTestCase):
@@ -266,6 +343,20 @@ class AlertsApiTestCase(ApiTestCase):
         self.assertIn(self.calf_device_id, [alert["device_id"] for alert in response.json["alerts"]])
         raised_times = [alert["raised_at"] for alert in response.json["alerts"]]
         self.assertEqual(raised_times, sorted(raised_times, reverse=True))
+
+    def test_failed_temperature_sensor_raises_no_alert_even_with_a_rule(self):
+        response = self.post_reading(
+            reading_payload(
+                "calf-sensor-fault-1",
+                device_id=self.calf_device_id,
+                body_temperature=None,
+                invalid_reasons={"body_temperature": "Sensor did not respond"},
+            ),
+            api_key="calf-test-key",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json["alerts"], [])
 
     def test_alert_listing_requires_an_authenticated_device_and_valid_limit(self):
         url = "/api/v1/monitoring/alerts"

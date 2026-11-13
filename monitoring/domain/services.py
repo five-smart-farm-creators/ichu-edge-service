@@ -169,7 +169,9 @@ class RuleEvaluator:
             if point_in_polygon(point, geofence.vertices):
                 continue
             distance = distance_to_boundary_meters(point, geofence.vertices)
-            if distance > geofence.tolerance_meters:
+            # GPS error can make a point inside the fence look outside; accuracy widens the tolerance.
+            margin = geofence.tolerance_meters + (reading.position.accuracy_meters or 0.0)
+            if distance > margin:
                 violations.append(
                     RuleViolation(
                         AlertType.GEOFENCE,

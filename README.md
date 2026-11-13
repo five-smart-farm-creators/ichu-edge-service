@@ -103,7 +103,7 @@ collar and gateway firmware and of the platform developers.
 ### Story-to-Context Mapping
 
 - **Monitoring bounded context**: `TS-EDGE-001`, `TS-EDGE-003`, `TS-EDGE-004`,
-  `TS-EDGE-005`, `TS-EDGE-006`, `TS-EDGE-008`
+  `TS-EDGE-005`, `TS-EDGE-006`, `TS-EDGE-008`, `TS-EDGE-009`
 - **IAM bounded context**: `TS-EDGE-002`
 - **Application bootstrap and shared infrastructure**: `TS-EDGE-007`
 
@@ -230,8 +230,9 @@ Before the first request is served, `create_app()`:
   `monitoring_alerts`, `monitoring_rule_sets`, `monitoring_thresholds`,
   `monitoring_geofences`, and `device_assignments` tables when they are missing
 - migrates stored device credentials to salted PBKDF2 verifiers, adds the
-  revocation column to existing device tables, and adds the `sync_attempts`
-  column to existing reading and alert tables
+  revocation column to existing device tables, adds the `sync_attempts`
+  column to existing reading and alert tables, and adds the `invalid_reasons`
+  column to existing reading tables
 - seeds the development devices only when explicitly enabled
 
 Monitoring then processes each reading in this order:
@@ -243,6 +244,10 @@ Monitoring then processes each reading in this order:
    device assignment.
 5. Each violation becomes an alert unless an alert of the same type was raised for
    the device within `ALERT_DEDUPLICATION_MINUTES`.
+
+A measurement with an invalid reason has no value, so it is not evaluated. A geofence
+is violated only when the position is farther outside its polygon than the geofence
+tolerance plus the reported `accuracy_meters`, so the GPS error alone does not raise an alert.
 
 Every reading and alert starts with the `pending` synchronization status and is
 marked `synced` or `rejected` once the cloud answers. A conflicting answer keeps it
@@ -352,11 +357,13 @@ JSON
   "recorded_at": "2026-11-07T10:00:00-05:00",
   "body_temperature": 38.5,
   "activity_index": 42.0,
-  "battery_level": 87.0,
   "position": {
     "latitude": -16.5,
     "longitude": -68.1,
     "accuracy_meters": 4.0
+  },
+  "invalid_reasons": {
+    "battery_level": "Battery sensor did not respond"
   }
 }
 ```
@@ -372,10 +379,12 @@ JSON
 - `activity_index` (`number`, optional): from 0 to 100
 - `battery_level` (`number`, optional): percentage, from 0 to 100
 - `position` (`object`, optional): `latitude` from -90 to 90, `longitude` from -180
-  to 180, and optional `accuracy_meters` of zero or more
+  to 180, and `accuracy_meters` (required) of zero or more
+- `invalid_reasons` (`object`, optional): why a measurement could not be captured, keyed by
+  `body_temperature`, `activity_index`, `battery_level`, or `position`; each reason is text of
+  1 to 200 characters after trimming. A field cannot have both a value and a reason.
 
-At least one measurement (`body_temperature`, `activity_index`, `battery_level`, or
-`position`) is required.
+At least one measurement value or invalid reason is required.
 
 #### Success response
 
@@ -392,10 +401,14 @@ original reading and no alerts.
     "body_temperature": 38.5,
     "activity_index": 42.0,
     "battery_level": 87.0,
+    "battery_level": null,
     "position": {
       "latitude": -16.5,
       "longitude": -68.1,
       "accuracy_meters": 4.0
+    },
+    "invalid_reasons": {
+      "battery_level": "Battery sensor did not respond"
     },
     "sync_status": "pending"
   },
@@ -405,8 +418,10 @@ original reading and no alerts.
 
 #### Error responses
 
-- `400 Bad Request`: invalid JSON or payload, missing measurement, a value out of
-  range, or a naive timestamp
+- `400 Bad Request`: invalid JSON or payload, no measurement value or invalid reason, a value out
+  of range, a naive timestamp, a `position` without `accuracy_meters`, an `invalid_reasons` key
+  that is not a measurement field, a blank or longer-than-200 reason, or a field that has both a
+  value and a reason
 - `401 Unauthorized`: missing `device_id` or `X-API-Key`, or an invalid device and key pair
 - `409 Conflict`: the `event_id` was already used for different telemetry
 - `415 Unsupported Media Type`: request is not JSON

@@ -253,7 +253,7 @@ the default in the development profile.
 
 ## ADR-0009: Evaluate monitoring rules locally against cached rules
 
-- **Status**: Accepted
+- **Status**: Accepted, partly superseded by ADR-0016
 - **Date**: 2026-11-07
 
 ### Context
@@ -463,3 +463,40 @@ from the `DEVICE_API_KEY` environment variable.
 - Keeping the lots and life stages in the development seed, which drifts from the cloud.
 - Merging the cloud list into the local table, which keeps assignments that the cloud has ended.
 - Creating collars from the assignment download, which needs a credential that the download does not carry.
+
+## ADR-0016: Per-field measurement validity and accuracy-aware geofences
+
+- **Status**: Accepted
+- **Date**: 2026-11-12
+
+### Context
+
+A collar that cannot read a sensor used to omit that field, so the gateway could not tell a sensor
+fault from a measurement that was never taken. A GPS fix also carries an error radius: an animal inside
+a geofence near its edge can be reported just outside it, which raised a false geofence alert. The cloud
+core rejects a position that has no accuracy, so the gateway must require it.
+
+### Decision
+
+Accept `invalid_reasons`, an optional object keyed by measurement field (`body_temperature`,
+`activity_index`, `battery_level`, `position`). Each reason is text of 1 to 200 characters, and a field
+carries either a value or a reason, never both. A reading whose fields are all invalid is still valid.
+Reasons are stored as a JSON column, sent to the cloud as `invalidReason` with a `null` value, and never
+evaluated against thresholds. Every position requires `accuracy_meters`. A geofence is violated only when
+the distance to its boundary exceeds the tolerance plus the accuracy, which supersedes the geofence rule of
+ADR-0009.
+
+### Consequences
+
+- A sensor fault reaches the cloud and the operator with its reason instead of a missing value.
+- A failed sensor cannot raise a threshold alert, because it has no value to compare.
+- A position within the GPS error of a geofence is not alerted; the animal must be farther outside than
+  the tolerance plus its accuracy.
+- A client that omits `accuracy_meters` receives `400 Bad Request`; the firmware already sends it.
+- Existing databases gain the `invalid_reasons` column when the service starts.
+
+### Alternatives considered
+
+- Sending an absent field as `null` without a reason, which cannot tell a fault from a measurement not taken.
+- Buffering the geofence polygon by the accuracy, which needs geometry where a distance comparison is enough.
+- Treating a missing accuracy as zero, which accepts a position that the cloud core rejects.
