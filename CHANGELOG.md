@@ -16,6 +16,11 @@ individually.
   back-off after failed cycles, and a clean stop on Ctrl+C.
 - `SYNC_INTERVAL_SECONDS` configuration, from 5 to 3600 seconds (default 15).
 - `deferred` count in the `POST /api/v1/synchronizations` response.
+- Collar assignments (lot and life stage) are downloaded from the cloud on every synchronization, and a
+  collar that the cloud no longer lists loses its assignment. Each cycle logs the number downloaded.
+- `assignments` count in the `POST /api/v1/synchronizations` response.
+- `flask --app app register-device DEVICE_ID` registers a collar with the key in the `DEVICE_API_KEY`
+  environment variable, so a collar that exists only in the cloud can authenticate.
 
 ### Changed
 
@@ -28,6 +33,7 @@ individually.
   rejected with the cloud's reason.
 - A batch that the cloud refuses with HTTP 400 or 422 is split, so only the invalid entries are retried and, after 5 refusals, rejected.
 - Existing databases gain the `sync_attempts` column when the service starts.
+- Development seeding registers the development devices only; their lots and life stages come from the cloud.
 
 ## [0.1.0] - 2026-11-07
 

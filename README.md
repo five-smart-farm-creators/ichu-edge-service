@@ -24,8 +24,10 @@ The service implements the edge side of the monitoring capability:
   - store-and-forward synchronization of readings and alerts in batches
   - periodic synchronization as a separate command (`flask --app app synchronize`)
   - refresh of the cached monitoring rules from the cloud, with revision checks
+  - refresh of the collar assignments (lot and life stage) from the cloud
+  - registration of collars with `flask --app app register-device`
   - an operational status endpoint and a local alert listing for the display panel
-  - development seeding of devices and lot assignments
+  - development seeding of devices
 - **Not implemented yet**
   - water trough controller
   - alert acknowledgement
@@ -101,7 +103,7 @@ collar and gateway firmware and of the platform developers.
 ### Story-to-Context Mapping
 
 - **Monitoring bounded context**: `TS-EDGE-001`, `TS-EDGE-003`, `TS-EDGE-004`,
-  `TS-EDGE-005`, `TS-EDGE-006`
+  `TS-EDGE-005`, `TS-EDGE-006`, `TS-EDGE-008`
 - **IAM bounded context**: `TS-EDGE-002`
 - **Application bootstrap and shared infrastructure**: `TS-EDGE-007`
 
@@ -230,7 +232,7 @@ Before the first request is served, `create_app()`:
 - migrates stored device credentials to salted PBKDF2 verifiers, adds the
   revocation column to existing device tables, and adds the `sync_attempts`
   column to existing reading and alert tables
-- seeds the development devices and lot assignments only when explicitly enabled
+- seeds the development devices only when explicitly enabled
 
 Monitoring then processes each reading in this order:
 
@@ -250,13 +252,14 @@ marked `synced` or `rejected` once the cloud answers. A conflicting answer keeps
 
 When `SEED_DEVELOPMENT_DATA=true`, the following devices are registered with the
 `DEVELOPMENT_DEVICE_API_KEY` value. Their identifiers match the collars seeded in the
-backend's development data.
+backend's development data. The gateway seeds no lots or life stages for them: they arrive
+with the cloud assignments at the next synchronization, and a collar is evaluated only after that.
 
-| Device ID | Lot | Life stage |
-|---|---|---|
-| `9d4a5f3b-3a6e-4f84-8daa-4e5f6a7b8c93` | `6a1f2c0e-0d3b-4c51-9a77-1b2c3d4e5f60` | `MilkingCow` |
-| `ae5b6a4c-4b7f-4a95-9ebb-5f6a7b8c9da4` | `6a1f2c0e-0d3b-4c51-9a77-1b2c3d4e5f60` | `Heifer` |
-| `bf6c7b5d-5c8a-4ba6-8fcc-6a7b8c9daeb5` | none (display panel) | none |
+| Device ID | Role |
+|---|---|
+| `9d4a5f3b-3a6e-4f84-8daa-4e5f6a7b8c93` | collar |
+| `ae5b6a4c-4b7f-4a95-9ebb-5f6a7b8c9da4` | collar |
+| `bf6c7b5d-5c8a-4ba6-8fcc-6a7b8c9daeb5` | display panel |
 
 The display panel authenticates the alert listing with its own device identifier and key.
 
@@ -458,14 +461,15 @@ curl "http://127.0.0.1:5000/api/v1/monitoring/alerts?device_id=bf6c7b5d-5c8a-4ba
 `POST /api/v1/synchronizations`
 
 This is an operator action on the local network. It carries no device credentials. The service
-refreshes the cached rules when the cloud has a newer revision, then pushes pending readings and
-alerts in one batch. The periodic synchronizer runs the same cycle on a timer; see
-[Run the synchronizer](#run-the-synchronizer).
+refreshes the cached rules when the cloud has a newer revision, replaces the collar assignments with
+the cloud's list, then pushes pending readings and alerts in one batch. The periodic synchronizer runs
+the same cycle on a timer; see [Run the synchronizer](#run-the-synchronizer).
 
 #### Responses
 
 - `200 OK`: body holds `rulesUpdated`, `rulesRevision`, `sentReadings`, `sentAlerts`, `synced`,
-  `rejected`, and `deferred` (conflicting entries that stay pending for another attempt)
+  `rejected`, `deferred` (conflicting entries that stay pending for another attempt), and
+  `assignments` (collar assignments received from the cloud)
 - `502 Bad Gateway`: the ICHU cloud API rejected the edge gateway credentials; pending records
   are kept
 - `503 Service Unavailable`: synchronization is not configured
@@ -515,6 +519,10 @@ on a real deployment.
 - **Rules**: the gateway requests `GET /api/v1/edge-gateways/{gatewayId}/monitoring-rules` with the
   `afterRevision` of its cached rules. A `304 Not Modified` answer keeps the cache; a `200 OK`
   answer replaces thresholds, geofences, and revision.
+- **Assignments**: the gateway requests `GET /api/v1/edge-gateways/{gatewayId}/device-assignments`
+  with the `X-Gateway-Key` header, after the rules and before the batches. The answer replaces the
+  local assignments: each collar gets its lot and life stage, and a collar that the cloud no longer
+  lists loses its assignment. A collar without an assignment is stored but not evaluated.
 - **Batches**: pending readings and alerts are sent to `POST /api/v1/telemetry/batch` with the
   `X-Gateway-Key` header. The cloud's per-entry status decides the local status: `Accepted` and
   `Duplicate` mark the entry `synced`; `Rejected` marks it `rejected` with the cloud's reason.
@@ -530,6 +538,31 @@ on a real deployment.
   credentials (`502` from the synchronization endpoint). Records stay `pending`.
 - **Store and forward**: when the cloud cannot be reached, nothing is marked and no record is lost.
   The next synchronization sends the same records again.
+
+### Register a collar
+
+The gateway authenticates only the collars it has registered, so each collar that the cloud assigns
+must be registered here once, with the API key set in that collar's firmware. The key is read from the `DEVICE_API_KEY`
+process environment variable and is never printed.
+
+Windows PowerShell:
+
+```powershell
+$env:DEVICE_API_KEY = "<collar api key>"
+.\.venv\Scripts\flask --app app register-device 9d4a5f3b-3a6e-4f84-8daa-4e5f6a7b8c93
+Remove-Item Env:DEVICE_API_KEY
+```
+
+bash:
+
+```sh
+export DEVICE_API_KEY='<collar api key>'
+flask --app app register-device 9d4a5f3b-3a6e-4f84-8daa-4e5f6a7b8c93
+unset DEVICE_API_KEY
+```
+
+The command prints `Device <deviceId> registered`, or `Device <deviceId> already registered` when the
+collar is known and changes nothing. An identifier that is not a UUID is rejected.
 
 ### Run the synchronizer
 

@@ -26,7 +26,7 @@ package "IAM Bounded Context" #FFEBDE {
     interface "DeviceRepository\n<<Protocol>>" as IDeviceRepository {
       +find_by_device_id(device_id): Device | None
       +save(device): Device
-      +get_or_create_device(device_id, api_key): Device
+      +get_or_create_device(device_id, api_key): tuple[Device, bool]
     }
   }
   package "application" #FFE6D5 {
@@ -35,7 +35,7 @@ package "IAM Bounded Context" #FFEBDE {
       +register_device(device_id, api_key): Device
       +rotate_api_key(device_id, new_api_key): Device
       +revoke_device(device_id): Device
-      +get_or_create_device(device_id, api_key): Device
+      +get_or_create_device(device_id, api_key): tuple[Device, bool]
     }
   }
   package "infrastructure" #FFDAC1 {
@@ -55,6 +55,9 @@ package "IAM Bounded Context" #FFEBDE {
     }
     class iam_api <<Flask Blueprint>> {
       +POST /api/v1/iam/authentications
+    }
+    class "commands.py\n<<Click commands>>" as IamCommands {
+      +register_device_command(device_id)
     }
   }
 }
@@ -136,7 +139,9 @@ package "Monitoring Bounded Context" #DEEAFF {
     interface "TelemetryReadingRepository\n<<Protocol>>" as IReadingRepository
     interface "MonitoringAlertRepository\n<<Protocol>>" as IAlertRepository
     interface "MonitoringRuleSetRepository\n<<Protocol>>" as IRuleRepository
-    interface "DeviceAssignmentRepository\n<<Protocol>>" as IAssignmentRepository
+    interface "DeviceAssignmentRepository\n<<Protocol>>" as IAssignmentRepository {
+      +replace_all(assignments)
+    }
   }
 
   package "application" #D5E7FF {
@@ -149,11 +154,13 @@ package "Monitoring Bounded Context" #DEEAFF {
     }
     class SynchronizationService {
       +refresh_rules(): RuleRefreshResult
+      +refresh_assignments(): int
       +push_pending(): SyncResult
       +synchronize(): SynchronizationResult
     }
     interface "CloudGateway\n<<Protocol>>" as ICloudGateway {
       +fetch_rules(after_revision): MonitoringRuleSet | None
+      +fetch_assignments(): list[DeviceAssignment]
       +send_batch(readings, alerts): list[CloudEntryResult]
     }
     class DeviceAuthenticationFailed
@@ -169,6 +176,7 @@ package "Monitoring Bounded Context" #DEEAFF {
     }
     class IchuCloudAntiCorruptionLayer {
       +fetch_rules(after_revision): MonitoringRuleSet | None
+      +fetch_assignments(): list[DeviceAssignment]
       +send_batch(readings, alerts): list[CloudEntryResult]
     }
     class DisabledCloudAntiCorruptionLayer
@@ -191,6 +199,7 @@ package "Monitoring Bounded Context" #DEEAFF {
     class "DeviceAssignmentRepository\n(implementation)" as DeviceAssignmentRepositoryImpl
     class IchuCloudClient {
       +fetch_monitoring_rules(after_revision): dict | None
+      +fetch_device_assignments(): dict
       +send_telemetry_batch(payload): dict
     }
   }
@@ -234,6 +243,7 @@ DeviceRepositoryImpl ..|> IDeviceRepository
 DeviceRepositoryImpl --> DeviceModel
 iam_api --> AuthRequest : validates
 iam_api --> AuthApplicationService : invokes
+IamCommands --> AuthApplicationService : registers devices through
 
 TelemetryReading --> SubmittingDevice
 TelemetryReading --> MeasurementVOs
@@ -254,6 +264,7 @@ SynchronizationService --> ICloudGateway
 SynchronizationService --> IReadingRepository
 SynchronizationService --> IAlertRepository
 SynchronizationService --> IRuleRepository
+SynchronizationService --> IAssignmentRepository
 SynchronizationService ..> CloudUnavailable : propagates
 SynchronizationService ..> CloudCredentialsRejected : propagates
 SynchronizationService ..> CloudBatchRejected : splits batch on
@@ -308,6 +319,7 @@ create_app ..> SynchronizationService : composes
 create_app ..> iam_api : registers
 create_app ..> monitoring_api : registers
 create_app ..> MonitoringCommands : registers synchronize
+create_app ..> IamCommands : registers register-device
 create_app ..> status_api : registers
 
 note bottom of create_app
