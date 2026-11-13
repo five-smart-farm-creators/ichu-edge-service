@@ -4,7 +4,14 @@ from typing import Any
 
 import requests
 
-from monitoring.application.errors import CloudCredentialsRejected, CloudUnavailable
+from monitoring.application.errors import (
+    CloudBatchRejected,
+    CloudCredentialsRejected,
+    CloudUnavailable,
+)
+
+# 400 and 422 refuse the whole batch as invalid, unlike 401/403 or an outage.
+_BATCH_REFUSAL_STATUSES = frozenset({400, 422})
 
 
 class IchuCloudClient:
@@ -36,10 +43,18 @@ class IchuCloudClient:
     def send_telemetry_batch(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Push one batch of readings and alerts and return the cloud's answer."""
         url = f"{self._base_url}/api/v1/telemetry/batch"
-        response = self._send("POST", url, json=payload)
+        response = self._send(
+            "POST", url, batch_refusal_statuses=_BATCH_REFUSAL_STATUSES, json=payload
+        )
         return self._json_object(response)
 
-    def _send(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+    def _send(
+        self,
+        method: str,
+        url: str,
+        batch_refusal_statuses: frozenset[int] = frozenset(),
+        **kwargs: Any,
+    ) -> requests.Response:
         try:
             response = self._session.request(
                 method,
@@ -52,6 +67,10 @@ class IchuCloudClient:
             raise CloudUnavailable("The ICHU cloud API could not be reached") from error
         if response.status_code in (401, 403):
             raise CloudCredentialsRejected
+        if response.status_code in batch_refusal_statuses:
+            raise CloudBatchRejected(
+                f"The ICHU cloud API refused the batch with HTTP {response.status_code}"
+            )
         if response.status_code >= 400:
             raise CloudUnavailable(
                 f"The ICHU cloud API answered with HTTP {response.status_code}"

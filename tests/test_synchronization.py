@@ -8,11 +8,13 @@ from unittest.mock import patch
 import requests
 
 from monitoring.application.errors import (
+    CloudBatchRejected,
     CloudCredentialsRejected,
     CloudUnavailable,
     SynchronizationDisabled,
 )
 from monitoring.application.services import (
+    MAX_SYNC_ATTEMPTS,
     CloudEntryResult,
     RuleRefreshResult,
     SynchronizationService,
@@ -31,6 +33,7 @@ from monitoring.integration.cloud_anti_corruption_layer import (
     DisabledCloudAntiCorruptionLayer,
     IchuCloudAntiCorruptionLayer,
 )
+from shared.infrastructure.database import configure_database, db
 
 
 DEVICE_ID = "9d4a5f3b-3a6e-4f84-8daa-4e5f6a7b8c93"
@@ -77,11 +80,13 @@ class FakeRuleRepository:
 
 
 class FakeCloudGateway:
-    def __init__(self, rule_sets=(), batch_results=(), error=None):
+    def __init__(self, rule_sets=(), batch_results=None, error=None, refused_reading_ids=()):
         self.rule_sets = list(rule_sets)
-        self.batch_results = list(batch_results)
+        self.batch_results = batch_results
         self.error = error
+        self.refused_reading_ids = set(refused_reading_ids)
         self.fetch_requests = []
+        self.sent_batches = []
 
     def fetch_rules(self, after_revision):
         self.fetch_requests.append(after_revision)
@@ -90,9 +95,17 @@ class FakeCloudGateway:
         return self.rule_sets.pop(0)
 
     def send_batch(self, readings, alerts):
+        self.sent_batches.append((list(readings), list(alerts)))
         if self.error is not None:
             raise self.error
-        return list(self.batch_results)
+        if any(reading.reading_id in self.refused_reading_ids for reading in readings):
+            raise CloudBatchRejected("Refused by fake cloud")
+        if self.batch_results is not None:
+            return list(self.batch_results)
+        return [
+            *(CloudEntryResult("Reading", str(reading.reading_id), "Accepted") for reading in readings),
+            *(CloudEntryResult("Alert", str(alert.alert_id), "Accepted") for alert in alerts),
+        ]
 
 
 def make_reading(event_id, temperature):
@@ -136,14 +149,14 @@ class SynchronizationServiceTestCase(unittest.TestCase):
 
         result = service.push_pending()
 
-        self.assertEqual(result, SyncResult(sent_readings=3, sent_alerts=1, synced=2, rejected=1))
+        self.assertEqual(result, SyncResult(sent_readings=3, sent_alerts=1, synced=2, rejected=1, deferred=0))
         self.assertEqual(readings.readings[accepted.reading_id].sync_status, SyncStatus.SYNCED)
         self.assertEqual(readings.readings[rejected.reading_id].sync_status, SyncStatus.REJECTED)
         self.assertEqual(readings.readings[rejected.reading_id].rejection_reason, "Unknown device")
         self.assertEqual(readings.readings[missing.reading_id].sync_status, SyncStatus.PENDING)
         self.assertEqual(alerts.alerts[alert.alert_id].sync_status, SyncStatus.SYNCED)
 
-    def test_conflict_marks_entry_rejected_with_cloud_reason(self):
+    def test_conflict_keeps_entry_pending_until_its_attempts_run_out(self):
         reading = make_reading("event-5", 38.5)
         readings = FakeReadingRepository([reading])
         cloud = FakeCloudGateway(
@@ -153,12 +166,72 @@ class SynchronizationServiceTestCase(unittest.TestCase):
         )
         service = SynchronizationService(cloud, readings, FakeAlertRepository([]), FakeRuleRepository(), batch_size=10)
 
-        result = service.push_pending()
+        first = service.push_pending()
 
-        self.assertEqual(result, SyncResult(sent_readings=1, sent_alerts=0, synced=0, rejected=1))
+        self.assertEqual(first, SyncResult(sent_readings=1, sent_alerts=0, synced=0, rejected=0, deferred=1))
+        self.assertEqual(readings.readings[reading.reading_id].sync_status, SyncStatus.PENDING)
+        self.assertEqual(readings.readings[reading.reading_id].sync_attempts, 1)
+
+        later = [service.push_pending() for _ in range(MAX_SYNC_ATTEMPTS - 1)]
+
+        self.assertEqual(later[-1], SyncResult(sent_readings=1, sent_alerts=0, synced=0, rejected=1, deferred=0))
         stored = readings.readings[reading.reading_id]
         self.assertEqual(stored.sync_status, SyncStatus.REJECTED)
         self.assertEqual(stored.rejection_reason, "Different telemetry")
+        self.assertEqual(stored.sync_attempts, MAX_SYNC_ATTEMPTS)
+
+    def test_refused_batch_is_split_and_only_the_invalid_reading_is_retried_then_rejected(self):
+        first = make_reading("event-a", 38.5)
+        refused = make_reading("event-x", 38.6)
+        last = make_reading("event-b", 38.7)
+        readings = FakeReadingRepository([first, refused, last])
+        cloud = FakeCloudGateway(refused_reading_ids=(refused.reading_id,))
+        service = SynchronizationService(cloud, readings, FakeAlertRepository([]), FakeRuleRepository(), batch_size=10)
+
+        result = service.push_pending()
+
+        self.assertEqual(result, SyncResult(sent_readings=3, sent_alerts=0, synced=2, rejected=0, deferred=1))
+        self.assertEqual(readings.readings[first.reading_id].sync_status, SyncStatus.SYNCED)
+        self.assertEqual(readings.readings[last.reading_id].sync_status, SyncStatus.SYNCED)
+        self.assertEqual(readings.readings[refused.reading_id].sync_status, SyncStatus.PENDING)
+
+        for _ in range(MAX_SYNC_ATTEMPTS - 1):
+            service.push_pending()
+
+        self.assertEqual(readings.readings[refused.reading_id].sync_status, SyncStatus.REJECTED)
+        self.assertEqual(
+            readings.readings[refused.reading_id].rejection_reason,
+            "Refused by the ICHU cloud API as invalid",
+        )
+
+    def test_outage_keeps_records_pending_and_recovery_sends_them_once(self):
+        reading = make_reading("event-r", 38.5)
+        readings = FakeReadingRepository([reading])
+        cloud = FakeCloudGateway(error=CloudUnavailable("offline"))
+        service = SynchronizationService(cloud, readings, FakeAlertRepository([]), FakeRuleRepository(), batch_size=10)
+
+        with self.assertRaises(CloudUnavailable):
+            service.push_pending()
+        self.assertEqual(readings.readings[reading.reading_id].sync_status, SyncStatus.PENDING)
+
+        cloud.error = None
+        self.assertEqual(service.push_pending(), SyncResult(sent_readings=1, sent_alerts=0, synced=1, rejected=0, deferred=0))
+        self.assertEqual(readings.readings[reading.reading_id].sync_status, SyncStatus.SYNCED)
+
+        sent_before = len(cloud.sent_batches)
+        self.assertEqual(service.push_pending(), SyncResult(0, 0, 0, 0, 0))
+        self.assertEqual(len(cloud.sent_batches), sent_before)
+
+    def test_duplicate_answer_counts_as_synced(self):
+        reading = make_reading("event-d", 38.5)
+        readings = FakeReadingRepository([reading])
+        cloud = FakeCloudGateway(batch_results=(CloudEntryResult("Reading", str(reading.reading_id), "Duplicate"),))
+        service = SynchronizationService(cloud, readings, FakeAlertRepository([]), FakeRuleRepository(), batch_size=10)
+
+        result = service.push_pending()
+
+        self.assertEqual(result, SyncResult(sent_readings=1, sent_alerts=0, synced=1, rejected=0, deferred=0))
+        self.assertEqual(readings.readings[reading.reading_id].sync_status, SyncStatus.SYNCED)
 
     def test_unavailable_cloud_keeps_every_record_pending(self):
         reading = make_reading("event-4", 38.5)
@@ -187,7 +260,7 @@ class SynchronizationServiceTestCase(unittest.TestCase):
 
         self.assertEqual(
             service.synchronize(),
-            SynchronizationResult(False, 0, 0, 0, 0, 0),
+            SynchronizationResult(False, 0, 0, 0, 0, 0, 0),
         )
 
     def test_disabled_gateway_refuses_every_call(self):
@@ -242,6 +315,13 @@ class IchuCloudClientTestCase(unittest.TestCase):
 
         with self.assertRaises(CloudUnavailable):
             client.send_telemetry_batch({"readings": [], "alerts": [], "alertChanges": []})
+
+    def test_refused_batch_answers_raise_batch_rejected(self):
+        for status in (400, 422):
+            with self.subTest(status=status):
+                client = make_client(FakeSession(response=FakeResponse(status)))
+                with self.assertRaises(CloudBatchRejected):
+                    client.send_telemetry_batch({"readings": [], "alerts": [], "alertChanges": []})
 
     def test_network_failures_raise_cloud_unavailable(self):
         client = make_client(FakeSession(error=requests.ConnectionError("unreachable")))
@@ -323,6 +403,69 @@ class SynchronizationEndpointTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json, {"error": "Cloud synchronization is not configured"})
+
+
+LEGACY_READINGS_TABLE = """
+    CREATE TABLE telemetry_readings (
+        reading_id VARCHAR(36) NOT NULL PRIMARY KEY,
+        device_id VARCHAR(36) NOT NULL,
+        event_id VARCHAR(128) NOT NULL,
+        recorded_at DATETIME NOT NULL,
+        timestamp_supplied INTEGER NOT NULL,
+        body_temperature REAL,
+        activity_index REAL,
+        battery_level REAL,
+        latitude REAL,
+        longitude REAL,
+        accuracy_meters REAL,
+        sync_status VARCHAR(16) NOT NULL,
+        rejection_reason TEXT
+    )
+"""
+
+LEGACY_ALERTS_TABLE = """
+    CREATE TABLE monitoring_alerts (
+        alert_id VARCHAR(36) NOT NULL PRIMARY KEY,
+        device_id VARCHAR(36) NOT NULL,
+        alert_type VARCHAR(16) NOT NULL,
+        severity VARCHAR(16) NOT NULL,
+        reading_ids TEXT NOT NULL,
+        configuration_revision INTEGER NOT NULL,
+        raised_at DATETIME NOT NULL,
+        threshold_min_value REAL,
+        threshold_max_value REAL,
+        geofence_id VARCHAR(36),
+        distance_to_boundary_meters REAL,
+        sync_status VARCHAR(16) NOT NULL,
+        rejection_reason TEXT
+    )
+"""
+
+
+class LegacySchemaMigrationTestCase(unittest.TestCase):
+    def test_databases_created_before_sync_attempts_gain_the_column_and_load_with_zero(self):
+        with tempfile.TemporaryDirectory(prefix="ichu-edge-migration-", ignore_cleanup_errors=True) as directory:
+            configure_database(os.path.join(directory, "v010.db"))
+            try:
+                db.execute_sql(LEGACY_READINGS_TABLE)
+                db.execute_sql(
+                    "INSERT INTO telemetry_readings (reading_id, device_id, event_id, recorded_at, "
+                    "timestamp_supplied, body_temperature, sync_status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (str(uuid.uuid4()), DEVICE_ID, "legacy-event", "2026-11-07 12:00:00", 1, 38.5, "pending"),
+                )
+                db.execute_sql(LEGACY_ALERTS_TABLE)
+
+                TelemetryReadingRepository().migrate_schema()
+                MonitoringAlertRepository().migrate_schema()
+                reading_columns = {column.name for column in db.get_columns("telemetry_readings")}
+                alert_columns = {column.name for column in db.get_columns("monitoring_alerts")}
+                pending = TelemetryReadingRepository().find_pending(10)
+            finally:
+                db.close()
+
+        self.assertIn("sync_attempts", reading_columns)
+        self.assertIn("sync_attempts", alert_columns)
+        self.assertEqual([reading.sync_attempts for reading in pending], [0])
 
 
 if __name__ == "__main__":

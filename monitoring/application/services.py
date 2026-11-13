@@ -1,11 +1,13 @@
 """Application services for the Monitoring bounded context."""
 
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Callable, Protocol
 
 from monitoring.application.errors import (
+    CloudBatchRejected,
     CloudCredentialsRejected,
     CloudUnavailable,
     DeviceAuthenticationFailed,
@@ -23,9 +25,13 @@ from monitoring.integration.iam_anti_corruption_layer import IamAntiCorruptionLa
 
 logger = logging.getLogger(__name__)
 
+MAX_SYNC_ATTEMPTS = 5
 _ACCEPTED_STATUSES = frozenset({"Accepted", "Duplicate"})
-_REJECTED_STATUSES = frozenset({"Rejected", "Conflict"})
+_REJECTED_STATUSES = frozenset({"Rejected"})
+_CONFLICT_STATUS = "Conflict"
+_ANSWERED_STATUSES = _ACCEPTED_STATUSES | _REJECTED_STATUSES | {_CONFLICT_STATUS}
 _DEFAULT_REJECTION_REASON = "Rejected by the ICHU cloud API"
+_REFUSED_BATCH_REASON = "Refused by the ICHU cloud API as invalid"
 
 
 def _utc_now() -> datetime:
@@ -58,6 +64,7 @@ class SyncResult:
     sent_alerts: int
     synced: int
     rejected: int
+    deferred: int
 
 
 @dataclass(frozen=True)
@@ -70,6 +77,7 @@ class SynchronizationResult:
     sent_alerts: int
     synced: int
     rejected: int
+    deferred: int
 
 
 @dataclass(frozen=True)
@@ -245,43 +253,85 @@ class SynchronizationService:
         readings = self._readings.find_pending(self._batch_size)
         alerts = self._alerts.find_pending(self._batch_size)
         if not readings and not alerts:
-            return SyncResult(0, 0, 0, 0)
+            return SyncResult(0, 0, 0, 0, 0)
+        outcome: Counter[SyncStatus] = Counter()
+        self._push_batch(readings, alerts, outcome)
+        # Conflicts that still have attempts left stay pending; those are the deferred ones.
+        return SyncResult(
+            len(readings),
+            len(alerts),
+            outcome[SyncStatus.SYNCED],
+            outcome[SyncStatus.REJECTED],
+            outcome[SyncStatus.PENDING],
+        )
 
-        entries = self._cloud.send_batch(readings, alerts)
+    def _push_batch(
+        self,
+        readings: list[TelemetryReading],
+        alerts: list[MonitoringAlert],
+        outcome: Counter[SyncStatus],
+    ) -> None:
+        """Send one batch and, if the cloud refuses it as invalid, split it and send each half."""
+        try:
+            entries = self._cloud.send_batch(readings, alerts)
+        except CloudBatchRejected:
+            size = len(readings) + len(alerts)
+            if size == 1:
+                # Retried a few times, so a cloud-side contract fault fixed soon does not discard the record.
+                if readings:
+                    settled = self._readings.update_sync_status(
+                        readings[0].defer_retry(_REFUSED_BATCH_REASON, MAX_SYNC_ATTEMPTS)
+                    )
+                else:
+                    settled = self._alerts.update_sync_status(
+                        alerts[0].defer_retry(_REFUSED_BATCH_REASON, MAX_SYNC_ATTEMPTS)
+                    )
+                outcome[settled.sync_status] += 1
+                return
+            # Readings come first, so an alert never reaches the cloud before a reading it cites.
+            middle = size // 2
+            alert_cut = max(0, middle - len(readings))
+            self._push_batch(readings[:middle], alerts[:alert_cut], outcome)
+            self._push_batch(readings[middle:], alerts[alert_cut:], outcome)
+            return
+        self._apply_answers(entries, readings, alerts, outcome)
+
+    def _apply_answers(
+        self,
+        entries: list[CloudEntryResult],
+        readings: list[TelemetryReading],
+        alerts: list[MonitoringAlert],
+        outcome: Counter[SyncStatus],
+    ) -> None:
+        """Persist the state that each cloud answer implies and count the outcomes."""
         readings_by_id = {str(reading.reading_id): reading for reading in readings}
         alerts_by_id = {str(alert.alert_id): alert for alert in alerts}
         handled: set[str] = set()
-        synced = 0
-        rejected = 0
         for entry in entries:
-            status = self._resolved_status(entry.status)
-            if status is None or entry.entry_id in handled:
+            if entry.status not in _ANSWERED_STATUSES or entry.entry_id in handled:
                 continue
             kind = entry.kind.casefold()
             if kind == "reading" and entry.entry_id in readings_by_id:
-                reading = readings_by_id[entry.entry_id]
-                if status is SyncStatus.SYNCED:
-                    self._readings.update_sync_status(reading.mark_synced())
-                else:
-                    self._readings.update_sync_status(
-                        reading.mark_rejected(self._rejection_reason(entry.reason))
-                    )
+                settled = self._answered(readings_by_id[entry.entry_id], entry)
+                self._readings.update_sync_status(settled)
             elif kind == "alert" and entry.entry_id in alerts_by_id:
-                alert = alerts_by_id[entry.entry_id]
-                if status is SyncStatus.SYNCED:
-                    self._alerts.update_sync_status(alert.mark_synced())
-                else:
-                    self._alerts.update_sync_status(
-                        alert.mark_rejected(self._rejection_reason(entry.reason))
-                    )
+                settled = self._answered(alerts_by_id[entry.entry_id], entry)
+                self._alerts.update_sync_status(settled)
             else:
                 continue
             handled.add(entry.entry_id)
-            if status is SyncStatus.SYNCED:
-                synced += 1
-            else:
-                rejected += 1
-        return SyncResult(len(readings), len(alerts), synced, rejected)
+            outcome[settled.sync_status] += 1
+
+    def _answered(
+        self, record: TelemetryReading | MonitoringAlert, entry: CloudEntryResult
+    ) -> TelemetryReading | MonitoringAlert:
+        """Return the record in the state that the cloud's answer implies."""
+        if entry.status in _ACCEPTED_STATUSES:
+            return record.mark_synced()
+        reason = self._rejection_reason(entry.reason)
+        if entry.status in _REJECTED_STATUSES:
+            return record.mark_rejected(reason)
+        return record.defer_retry(reason, MAX_SYNC_ATTEMPTS)
 
     def synchronize(self) -> SynchronizationResult:
         """Refresh the cached rules, then push pending records."""
@@ -295,11 +345,12 @@ class SynchronizationService:
             logger.warning("ICHU cloud rejected the edge gateway credentials; records remain pending")
             raise
         logger.info(
-            "Synchronized %d readings and %d alerts (%d synced, %d rejected)",
+            "Synchronized %d readings and %d alerts (%d synced, %d rejected, %d deferred)",
             push.sent_readings,
             push.sent_alerts,
             push.synced,
             push.rejected,
+            push.deferred,
         )
         return SynchronizationResult(
             refresh.updated,
@@ -308,16 +359,8 @@ class SynchronizationService:
             push.sent_alerts,
             push.synced,
             push.rejected,
+            push.deferred,
         )
-
-    @staticmethod
-    def _resolved_status(status: str) -> SyncStatus | None:
-        """Map a cloud status to a synchronization state, or ``None`` if unknown."""
-        if status in _ACCEPTED_STATUSES:
-            return SyncStatus.SYNCED
-        if status in _REJECTED_STATUSES:
-            return SyncStatus.REJECTED
-        return None
 
     @staticmethod
     def _rejection_reason(reason: str | None) -> str:

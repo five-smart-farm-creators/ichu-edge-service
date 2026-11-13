@@ -51,6 +51,17 @@ def _as_utc(value: datetime) -> datetime:
 class TelemetryReadingRepository:
     """Persist and reconstruct telemetry readings with idempotent submission."""
 
+    def migrate_schema(self) -> None:
+        """Add the attempt counter that databases created by v0.1.0 lack."""
+        database = TelemetryReadingModel._meta.database
+        with database.atomic():
+            columns = {column.name for column in database.get_columns("telemetry_readings")}
+            if "sync_attempts" not in columns:
+                database.execute_sql(
+                    'ALTER TABLE "telemetry_readings" '
+                    'ADD COLUMN "sync_attempts" INTEGER NOT NULL DEFAULT 0'
+                )
+
     def save_idempotently(self, reading: TelemetryReading) -> ReadingSaveResult:
         """Persist a reading or return the matching prior submission; the unique index guards retries."""
         database = TelemetryReadingModel._meta.database
@@ -82,6 +93,7 @@ class TelemetryReadingRepository:
         TelemetryReadingModel.update(
             sync_status=reading.sync_status.value,
             rejection_reason=reading.rejection_reason,
+            sync_attempts=reading.sync_attempts,
         ).where(TelemetryReadingModel.reading_id == str(reading.reading_id)).execute()
         return reading
 
@@ -125,6 +137,7 @@ class TelemetryReadingRepository:
             "accuracy_meters": None if position is None else position.accuracy_meters,
             "sync_status": reading.sync_status.value,
             "rejection_reason": reading.rejection_reason,
+            "sync_attempts": reading.sync_attempts,
         }
 
     @staticmethod
@@ -144,11 +157,23 @@ class TelemetryReadingRepository:
             position,
             SyncStatus(row.sync_status),
             row.rejection_reason,
+            row.sync_attempts,
         )
 
 
 class MonitoringAlertRepository:
     """Persist and reconstruct locally raised monitoring alerts."""
+
+    def migrate_schema(self) -> None:
+        """Add the attempt counter that databases created by v0.1.0 lack."""
+        database = MonitoringAlertModel._meta.database
+        with database.atomic():
+            columns = {column.name for column in database.get_columns("monitoring_alerts")}
+            if "sync_attempts" not in columns:
+                database.execute_sql(
+                    'ALTER TABLE "monitoring_alerts" '
+                    'ADD COLUMN "sync_attempts" INTEGER NOT NULL DEFAULT 0'
+                )
 
     def save(self, alert: MonitoringAlert) -> MonitoringAlert:
         """Persist a newly raised alert."""
@@ -166,6 +191,7 @@ class MonitoringAlertRepository:
             distance_to_boundary_meters=alert.distance_to_boundary_meters,
             sync_status=alert.sync_status.value,
             rejection_reason=alert.rejection_reason,
+            sync_attempts=alert.sync_attempts,
         )
         return alert
 
@@ -209,6 +235,7 @@ class MonitoringAlertRepository:
         MonitoringAlertModel.update(
             sync_status=alert.sync_status.value,
             rejection_reason=alert.rejection_reason,
+            sync_attempts=alert.sync_attempts,
         ).where(MonitoringAlertModel.alert_id == str(alert.alert_id)).execute()
         return alert
 
@@ -236,6 +263,7 @@ class MonitoringAlertRepository:
             row.distance_to_boundary_meters,
             SyncStatus(row.sync_status),
             row.rejection_reason,
+            row.sync_attempts,
         )
 
 
