@@ -204,9 +204,8 @@ setting; it does not supply defaults for missing settings.
 | `PORT` | `5000` | `5000` | Integer from 1 to 65535 |
 | `SEED_DEVELOPMENT_DATA` | `false` | `false` | Must be `false` in production |
 | `DEVELOPMENT_DEVICE_API_KEY` | empty | empty | Required when seeding is enabled |
-| `CLOUD_API_BASE_URL` | empty | empty | Empty disables synchronization; otherwise an http(s) URL |
-| `EDGE_GATEWAY_ID` | `c07d8c6e-6d9b-4cb7-9add-7b8c9daebfc6` | empty | UUID; required when `CLOUD_API_BASE_URL` is set |
-| `EDGE_GATEWAY_KEY` | empty | empty | `{gatewayId}.{secret}` issued by the backend; required when `CLOUD_API_BASE_URL` is set; never committed |
+| `CLOUD_API_BASE_URL` | empty | empty | Empty disables synchronization; otherwise an http(s) URL, which must be https in production except for localhost |
+| `EDGE_GATEWAY_KEY` | empty | empty | `{gatewayId}.{secret}` issued by the backend; the gateway id is read from the key; required when `CLOUD_API_BASE_URL` is set; never committed |
 | `ALERT_DEDUPLICATION_MINUTES` | `15` | `15` | Integer from 1 to 1440 |
 | `SYNC_BATCH_SIZE` | `100` | `100` | Integer from 1 to 500 |
 | `CLOUD_TIMEOUT_SECONDS` | `10` | `10` | Integer from 1 to 60 |
@@ -215,6 +214,9 @@ For production, set `APP_ENV=production` in the process environment and supply
 secrets through the deployment's secret mechanism. Production disables debug mode
 and development seeding, and should run behind a production WSGI server rather
 than Flask's built-in server.
+
+Keep `EDGE_GATEWAY_KEY` and `DEVELOPMENT_DEVICE_API_KEY` out of the `.env.*` files. Set them as
+user environment variables, as shown in [Synchronization with the Cloud](#synchronization-with-the-cloud).
 
 ## Runtime Behavior
 
@@ -472,28 +474,39 @@ curl -X POST http://127.0.0.1:5000/api/v1/synchronizations
 
 ## Synchronization with the Cloud
 
-Synchronization is disabled in the development profile. To synchronize with the ICHU backend
-running locally with its development data, set these variables in the process environment before
-starting the service.
+Synchronization is disabled in the development profile. To synchronize with an ICHU backend, set
+`CLOUD_API_BASE_URL` to the backend address and set the gateway key as a user environment variable.
+
+| Backend | `CLOUD_API_BASE_URL` |
+|---|---|
+| Local ICHU backend | `http://localhost:5099` |
+| Deployed ICHU backend | `https://ichu-web-service.onrender.com` |
+
+The deployed backend runs on Render's free plan, so its first request after an idle period can take
+about a minute. A synchronization that times out keeps its records pending, and the next one retries them.
 
 Windows PowerShell:
 
 ```powershell
 $env:CLOUD_API_BASE_URL = "http://localhost:5099"
-$env:EDGE_GATEWAY_KEY = "c07d8c6e-6d9b-4cb7-9add-7b8c9daebfc6.development-gateway-key"
+[Environment]::SetEnvironmentVariable("EDGE_GATEWAY_KEY", "<gatewayId>.<secret>", "User")
 ```
 
 bash:
 
 ```sh
 export CLOUD_API_BASE_URL=http://localhost:5099
-export EDGE_GATEWAY_KEY=c07d8c6e-6d9b-4cb7-9add-7b8c9daebfc6.development-gateway-key
+export EDGE_GATEWAY_KEY='<gatewayId>.<secret>'
 ```
+
+The PowerShell user variable is available in new terminals; the bash `export` lasts for the current
+shell only.
 
 A gateway key has the form `{gatewayId}.{secret}`. The backend returns it once, when the gateway is
 registered with `POST /api/v1/ranches/{ranchId}/edge-gateways`, and stores only a hash of the secret.
-The key above belongs to the gateway seeded in the backend's development data; it is for local
-development only and must never be used on a real deployment.
+The service reads the gateway id from the key, so no separate gateway id is configured. The key of the
+gateway seeded in the backend's development data is for local development only and must never be used
+on a real deployment.
 
 - **Rules**: the gateway requests `GET /api/v1/edge-gateways/{gatewayId}/monitoring-rules` with the
   `afterRevision` of its cached rules. A `304 Not Modified` answer keeps the cache; a `200 OK`
