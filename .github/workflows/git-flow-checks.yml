@@ -22,8 +22,8 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           case "$HEAD_REF" in
-            feature/*|bugfix/*)
-              echo "$HEAD_REF" | grep -Eq '^(feature|bugfix)/[a-z0-9]+(-[a-z0-9]+)*$' \
+            feature/*|bugfix/*|fix/*)
+              echo "$HEAD_REF" | grep -Eq '^(feature|bugfix|fix)/[a-z0-9]+(-[a-z0-9]+)*$' \
                 || { echo "Use lowercase kebab-case: $HEAD_REF"; exit 1; }
               [ "$BASE_REF" = "develop" ] \
                 || { echo "$HEAD_REF must target develop, not $BASE_REF"; exit 1; } ;;
@@ -31,7 +31,7 @@ jobs:
               echo "$HEAD_REF" | grep -Eq '^(release|hotfix)/v[0-9]+\.[0-9]+\.[0-9]+$' \
                 || { echo "Use release/vX.Y.Z or hotfix/vX.Y.Z: $HEAD_REF"; exit 1; } ;;
             *)
-              echo "Branch $HEAD_REF is not a Git Flow branch (feature/, bugfix/, release/, hotfix/)"
+              echo "Branch $HEAD_REF is not a Git Flow branch (feature/, bugfix/, fix/, release/, hotfix/)"
               exit 1 ;;
           esac
 

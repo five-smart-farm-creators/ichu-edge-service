@@ -33,12 +33,13 @@ Use main for release history and develop for integration. Do not commit directly
 | --- | --- | --- |
 | feature/<short-description> | develop | develop |
 | bugfix/<short-description> | develop | develop |
+| fix/<short-description> | develop | develop |
 | release/vX.Y.Z | develop | main, then merge back into develop |
 | hotfix/vX.Y.Z | main | main, then merge back into develop |
 
 Use lowercase kebab-case branch descriptions. Keep branches focused and delete topic branches after they are merged.
 
-Never open a pull request from `develop` to `main`; releases always go through `release/vX.Y.Z`. Do not use other branch prefixes, such as `fix/`, `docs/`, `refactor/`, `chore/`, or `audit/`.
+Never open a pull request from `develop` to `main`; releases always go through `release/vX.Y.Z`. Do not use other branch prefixes, such as `docs/`, `refactor/`, `chore/`, or `audit/`.
 
 ~~~sh
 git switch develop
@@ -84,7 +85,7 @@ Record each logical code, configuration, architecture, or documentation change i
 
 ## Pull requests
 
-Open feature and bugfix pull requests against develop. Include the purpose, a concise summary, relevant checks, and screenshots for user interface changes. Link related issues when applicable, address review feedback, and do not merge until the required review and checks are complete.
+Open feature, bugfix, and fix pull requests against develop. Keep one logical fix per Conventional Commit. Include the purpose, a concise summary, relevant checks, and screenshots for user interface changes. Link related issues when applicable, address review feedback, and do not merge until the required review and checks are complete.
 
 ## Commit granularity
 
