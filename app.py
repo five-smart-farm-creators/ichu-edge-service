@@ -30,6 +30,7 @@ from monitoring.integration.cloud_anti_corruption_layer import (
     IchuCloudAntiCorruptionLayer,
 )
 from monitoring.integration.iam_anti_corruption_layer import IamAntiCorruptionLayer
+from monitoring.interfaces.commands import synchronize_command
 from monitoring.interfaces.services import monitoring_api
 from shared.infrastructure.database import configure_database, db, init_db
 from shared.interfaces.status import status_api
@@ -51,10 +52,13 @@ def create_app() -> Flask:
     init_db()
     device_repository = DeviceRepository()
     device_repository.migrate_schema()
+    TelemetryReadingRepository().migrate_schema()
+    MonitoringAlertRepository().migrate_schema()
 
     app.register_blueprint(status_api)
     app.register_blueprint(iam_api)
     app.register_blueprint(monitoring_api)
+    app.cli.add_command(synchronize_command)
 
     iam_service = AuthApplicationService(device_repository)
     iam_acl = IamAntiCorruptionLayer(iam_service)

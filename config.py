@@ -22,6 +22,7 @@ class AppConfig(TypedDict):
     EDGE_GATEWAY_KEY: str | None
     ALERT_DEDUPLICATION_MINUTES: int
     SYNC_BATCH_SIZE: int
+    SYNC_INTERVAL_SECONDS: int
     CLOUD_TIMEOUT_SECONDS: int
 
 
@@ -145,6 +146,9 @@ def load_config(project_root: Path) -> AppConfig:
         ),
         "SYNC_BATCH_SIZE": _as_int(
             "SYNC_BATCH_SIZE", _required(values, "SYNC_BATCH_SIZE"), 1, 500
+        ),
+        "SYNC_INTERVAL_SECONDS": _as_int(
+            "SYNC_INTERVAL_SECONDS", _required(values, "SYNC_INTERVAL_SECONDS"), 5, 3600
         ),
         "CLOUD_TIMEOUT_SECONDS": _as_int(
             "CLOUD_TIMEOUT_SECONDS", _required(values, "CLOUD_TIMEOUT_SECONDS"), 1, 60
