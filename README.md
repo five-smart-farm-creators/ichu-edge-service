@@ -14,7 +14,7 @@ other systems only through anti-corruption layers.
 
 ## Current Scope
 
-Version `0.1.0` implements the edge side of the monitoring capability:
+The service implements the edge side of the monitoring capability:
 
 - **Implemented**
   - device authentication with `device_id` and `X-API-Key`
@@ -22,6 +22,7 @@ Version `0.1.0` implements the edge side of the monitoring capability:
   - idempotent persistence in SQLite with a per-reading synchronization status
   - local alerting from cached thresholds and geofences, with deduplication
   - store-and-forward synchronization of readings and alerts in batches
+  - periodic synchronization as a separate command (`flask --app app synchronize`)
   - refresh of the cached monitoring rules from the cloud, with revision checks
   - an operational status endpoint and a local alert listing for the display panel
   - development seeding of devices and lot assignments
@@ -29,7 +30,6 @@ Version `0.1.0` implements the edge side of the monitoring capability:
   - water trough controller
   - alert acknowledgement
   - Bluetooth Low Energy (BLE) communication with the collars
-  - a background scheduler for synchronization (it is triggered through the API)
 
 ## Why DDD for an IoT Edge Service?
 
@@ -208,7 +208,8 @@ setting; it does not supply defaults for missing settings.
 | `EDGE_GATEWAY_KEY` | empty | empty | `{gatewayId}.{secret}` issued by the backend; the gateway id is read from the key; required when `CLOUD_API_BASE_URL` is set; never committed |
 | `ALERT_DEDUPLICATION_MINUTES` | `15` | `15` | Integer from 1 to 1440 |
 | `SYNC_BATCH_SIZE` | `100` | `100` | Integer from 1 to 500 |
-| `CLOUD_TIMEOUT_SECONDS` | `10` | `10` | Integer from 1 to 60 |
+| `SYNC_INTERVAL_SECONDS` | `15` | `15` | Integer from 5 to 3600; the pause between synchronizer cycles |
+| `CLOUD_TIMEOUT_SECONDS` | `10` | `10` | Integer from 1 to 60; a Render cold start can take about a minute, so a timed-out cycle is retried by the next one |
 
 For production, set `APP_ENV=production` in the process environment and supply
 secrets through the deployment's secret mechanism. Production disables debug mode
@@ -226,8 +227,9 @@ Before the first request is served, `create_app()`:
 - initializes the SQLite database and creates the `devices`, `telemetry_readings`,
   `monitoring_alerts`, `monitoring_rule_sets`, `monitoring_thresholds`,
   `monitoring_geofences`, and `device_assignments` tables when they are missing
-- migrates stored device credentials to salted PBKDF2 verifiers and adds the
-  revocation column to existing device tables
+- migrates stored device credentials to salted PBKDF2 verifiers, adds the
+  revocation column to existing device tables, and adds the `sync_attempts`
+  column to existing reading and alert tables
 - seeds the development devices and lot assignments only when explicitly enabled
 
 Monitoring then processes each reading in this order:
@@ -241,7 +243,8 @@ Monitoring then processes each reading in this order:
    the device within `ALERT_DEDUPLICATION_MINUTES`.
 
 Every reading and alert starts with the `pending` synchronization status and is
-marked `synced` or `rejected` once the cloud answers.
+marked `synced` or `rejected` once the cloud answers. A conflicting answer keeps it
+`pending` until its attempts run out (see [Synchronize with the cloud](#synchronize-with-the-cloud)).
 
 ## Development Devices
 
@@ -456,12 +459,13 @@ curl "http://127.0.0.1:5000/api/v1/monitoring/alerts?device_id=bf6c7b5d-5c8a-4ba
 
 This is an operator action on the local network. It carries no device credentials. The service
 refreshes the cached rules when the cloud has a newer revision, then pushes pending readings and
-alerts in one batch.
+alerts in one batch. The periodic synchronizer runs the same cycle on a timer; see
+[Run the synchronizer](#run-the-synchronizer).
 
 #### Responses
 
 - `200 OK`: body holds `rulesUpdated`, `rulesRevision`, `sentReadings`, `sentAlerts`, `synced`,
-  and `rejected`
+  `rejected`, and `deferred` (conflicting entries that stay pending for another attempt)
 - `502 Bad Gateway`: the ICHU cloud API rejected the edge gateway credentials; pending records
   are kept
 - `503 Service Unavailable`: synchronization is not configured
@@ -513,12 +517,46 @@ on a real deployment.
   answer replaces thresholds, geofences, and revision.
 - **Batches**: pending readings and alerts are sent to `POST /api/v1/telemetry/batch` with the
   `X-Gateway-Key` header. The cloud's per-entry status decides the local status: `Accepted` and
-  `Duplicate` mark the entry `synced`; `Rejected` and `Conflict` mark it `rejected` with the
-  cloud's reason. Entries missing from the answer stay `pending`.
+  `Duplicate` mark the entry `synced`; `Rejected` marks it `rejected` with the cloud's reason.
+  Entries missing from the answer stay `pending`.
+- **Conflicts**: a `Conflict` keeps the entry `pending` and counts it as `deferred`, because the
+  cloud also reports a transient race as a conflict. After 5 conflicting answers the entry is
+  `rejected` with the cloud's reason.
+- **Refused batches**: a `400` or `422` answer refuses a whole batch. The service splits it in
+  halves and sends each half, readings before alerts, until the invalid entry is alone. That entry
+  stays `pending` as `deferred` and, after 5 refusals, is `rejected` with `Refused by the ICHU cloud
+  API as invalid`; the other entries follow their own answers.
 - **Credentials**: an HTTP `401` or `403` from the cloud is reported as rejected gateway
   credentials (`502` from the synchronization endpoint). Records stay `pending`.
 - **Store and forward**: when the cloud cannot be reached, nothing is marked and no record is lost.
   The next synchronization sends the same records again.
+
+### Run the synchronizer
+
+The periodic synchronizer is a separate process, so the web server and the synchronizer can be
+stopped and restarted on their own. Run it in a second terminal, with the same configuration.
+
+Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\flask --app app synchronize
+.\.venv\Scripts\flask --app app synchronize --interval 30
+.\.venv\Scripts\flask --app app synchronize --once
+```
+
+bash:
+
+```sh
+flask --app app synchronize
+flask --app app synchronize --interval 30
+flask --app app synchronize --once
+```
+
+`--interval` sets the seconds between cycles, from 5 to 3600; it defaults to `SYNC_INTERVAL_SECONDS`.
+Each cycle logs its outcome. After a failed cycle the wait doubles with every consecutive failure, up
+to 5 minutes, so a cloud that is down or waking up is not hammered. A full batch that settled records starts the next cycle
+at once. `--once` runs a single cycle and exits with status 1 when synchronization is not configured or
+the cloud cannot be reached. Ctrl+C stops the synchronizer with status 0.
 
 ## Operational Notes
 
@@ -535,6 +573,8 @@ on a real deployment.
   device on the gateway.
 - **Observability**: the service logs alert creation and synchronization outcomes.
   Add structured logging and a process supervisor before production use.
+- **Synchronizer process**: the web server does not start `flask --app app synchronize`. Run it under
+  a process supervisor next to the service.
 - **Schema changes**: tables are created when missing. Use a versioned migration
   workflow and back up the SQLite database before changing a deployed schema.
 

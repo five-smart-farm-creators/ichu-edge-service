@@ -12,6 +12,10 @@ individually.
 ### Added
 
 - GitHub Actions `test` job that runs the unit test suite on pull requests.
+- Periodic synchronizer command, `flask --app app synchronize`, with `--interval` and `--once`,
+  back-off after failed cycles, and a clean stop on Ctrl+C.
+- `SYNC_INTERVAL_SECONDS` configuration, from 5 to 3600 seconds (default 15).
+- `deferred` count in the `POST /api/v1/synchronizations` response.
 
 ### Changed
 
@@ -20,6 +24,10 @@ individually.
 - The gateway id is derived from `EDGE_GATEWAY_KEY`; `EDGE_GATEWAY_ID` is removed.
 - Production requires an https `CLOUD_API_BASE_URL`, except for localhost.
 - SQLite runs in WAL mode so reads continue while another process writes.
+- A cloud `Conflict` keeps the entry pending and is retried up to 5 times before the entry is
+  rejected with the cloud's reason.
+- A batch that the cloud refuses with HTTP 400 or 422 is split, so only the invalid entries are retried and, after 5 refusals, rejected.
+- Existing databases gain the `sync_attempts` column when the service starts.
 
 ## [0.1.0] - 2026-11-07
 

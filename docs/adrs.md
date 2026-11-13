@@ -220,7 +220,7 @@ successful verification into a `SubmittingDevice`, and returns no device otherwi
 
 ## ADR-0008: Synchronize with the cloud using store-and-forward batches
 
-- **Status**: Accepted
+- **Status**: Accepted, partly superseded by ADR-0013 and ADR-0014
 - **Date**: 2026-11-07
 
 ### Context
@@ -361,3 +361,71 @@ UUID. `EDGE_GATEWAY_ID` is no longer a setting.
 ### Alternatives considered
 
 - Keeping `EDGE_GATEWAY_ID` and checking it against the key, which keeps two values that must agree.
+
+## ADR-0013: Run the periodic synchronizer as a separate CLI process
+
+- **Status**: Accepted
+- **Date**: 2026-11-12
+
+### Context
+
+Pending readings must reach the cloud without an operator calling
+`POST /api/v1/synchronizations`, and the cloud can stay down for hours. A loop started from
+`create_app()` would run inside the web server: the Flask development reloader runs the factory
+twice, so the loop would start twice against the same database, and stopping it would stop ingestion too.
+
+### Decision
+
+Run the loop as the `synchronize` command of the Flask CLI (`flask --app app synchronize`), in its
+own process next to the web server. Each cycle calls the same use case as the manual endpoint.
+`SYNC_INTERVAL_SECONDS` sets the pause between cycles, and `--once` runs a single cycle for scripts
+or cron. The manual endpoint stays available.
+
+### Consequences
+
+- The web server and the synchronizer restart independently, and stopping one never stops the other.
+- The development reloader does not start a second synchronizer.
+- Both processes write the same SQLite file; the busy timeout in `shared/infrastructure/database.py`
+  makes their writes wait for each other.
+- Operators must start and supervise a second process on the gateway.
+
+### Alternatives considered
+
+- A thread started in `create_app()`, which runs twice under the reloader and ends with the web server.
+- A cron job that calls `POST /api/v1/synchronizations`, which cannot back off between failed attempts.
+
+## ADR-0014: Retry conflicts a bounded number of times and isolate refused batches
+
+- **Status**: Accepted
+- **Date**: 2026-11-12
+
+### Context
+
+The cloud answers `Conflict` for a transient race, such as a reading that was being stored at the same
+moment, and the same entry becomes `Duplicate` on the next try. Rejecting on the first conflict would
+discard telemetry the cloud would accept. The cloud also refuses a whole batch with `400` or `422` when
+one entry is invalid, so one bad reading would block every entry sent with it.
+
+### Decision
+
+A `Conflict` keeps the entry `pending` and increments its `sync_attempts`; the fifth conflicting answer
+rejects it with the cloud's reason. A refused batch is split into two halves, and the first half is sent
+before the second. Readings precede alerts in the split, so an alert never reaches the cloud before a
+reading it cites. The split repeats until the invalid entry is alone; that entry counts an attempt like a conflict and
+is rejected with `Refused by the ICHU cloud API as invalid` after the fifth refusal. Outages and rejected credentials still stop the cycle, and
+every unanswered record stays `pending`.
+
+### Consequences
+
+- A transient race resolves on a later attempt instead of rejecting telemetry.
+- A batch with one invalid entry takes about two requests per halving step, so roughly `2 log2(n)`
+  requests for `n` entries.
+- A `400` or `422` caused by something other than one entry, such as a contract mismatch, refuses each
+  record on its own; the five attempts give time to fix the cloud before records are rejected.
+- Rejected entries keep their reason, as in ADR-0008.
+
+### Alternatives considered
+
+- Rejecting a conflict on the first answer, which discards telemetry a retry would accept.
+- Resending a refused batch unchanged, which the cloud refuses again.
+- Dropping an invalid entry without a reason, which hides it from operators.
