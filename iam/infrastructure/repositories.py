@@ -69,15 +69,15 @@ class DeviceRepository:
                 ).execute()
         return device
 
-    def get_or_create_device(self, device_id: str, api_key: str) -> Device:
-        """Retrieve the identified device or register it if absent."""
+    def get_or_create_device(self, device_id: str, api_key: str) -> tuple[Device, bool]:
+        """Retrieve the identified device or register it, and report whether it was registered."""
         existing = DeviceModel.get_or_none(
             DeviceModel.device_id == canonical_device_id(device_id)
         )
         if existing is not None:
-            return self._to_entity(existing)
+            return self._to_entity(existing), False
         new_device = Device.register(device_id, api_key)
-        return self.save(new_device)
+        return self.save(new_device), True
 
     @staticmethod
     def _to_entity(row: DeviceModel) -> Device:

@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+import uuid
 from unittest.mock import patch
 
 import click
@@ -26,7 +27,7 @@ class FakeSynchronizationService:
 
 
 def cycle_result(sent_readings=0, sent_alerts=0):
-    return SynchronizationResult(False, 0, sent_readings, sent_alerts, sent_readings, 0, 0)
+    return SynchronizationResult(False, 0, sent_readings, sent_alerts, sent_readings, 0, 0, 0)
 
 
 class NextDelaySecondsTestCase(unittest.TestCase):
@@ -54,7 +55,7 @@ class RunSynchronizerTestCase(unittest.TestCase):
         self.assertEqual(delays, [30, 60, 15])
 
     def test_full_batch_that_settles_nothing_waits_for_the_interval(self):
-        unanswered = SynchronizationResult(False, 0, 100, 0, 0, 0, 0)
+        unanswered = SynchronizationResult(False, 0, 100, 0, 0, 0, 0, 0)
         service = FakeSynchronizationService([unanswered])
         delays = []
 
@@ -122,6 +123,53 @@ class SynchronizeCommandTestCase(unittest.TestCase):
         result = self.invoke_with(FakeSynchronizationService([KeyboardInterrupt()]))
 
         self.assertEqual(result.exit_code, 0)
+
+
+class RegisterDeviceCommandTestCase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.directory = tempfile.TemporaryDirectory(prefix="ichu-edge-register-", ignore_cleanup_errors=True)
+        environment = {
+            "APP_ENV": "development",
+            "DATABASE_PATH": os.path.join(cls.directory.name, "register.db"),
+            "SEED_DEVELOPMENT_DATA": "false",
+            "CLOUD_API_BASE_URL": "",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            from app import create_app
+
+            cls.app = create_app()
+        cls.app.testing = True
+
+    def test_registers_a_collar_once_with_the_key_from_the_environment(self):
+        device_id = str(uuid.uuid4())
+        with patch.dict(os.environ, {"DEVICE_API_KEY": "collar-test-key"}):
+            first = self.app.test_cli_runner().invoke(args=["register-device", device_id])
+            second = self.app.test_cli_runner().invoke(args=["register-device", device_id])
+
+        self.assertEqual(first.exit_code, 0)
+        self.assertEqual(first.output, f"Device {device_id} registered\n")
+        self.assertEqual(second.exit_code, 0)
+        self.assertEqual(second.output, f"Device {device_id} already registered\n")
+        self.assertNotIn("collar-test-key", first.output + second.output)
+        self.assertTrue(
+            self.app.extensions["iam_authentication_service"].authenticate(device_id, "collar-test-key")
+        )
+
+    def test_missing_device_api_key_is_a_command_error(self):
+        with patch.dict(os.environ):
+            os.environ.pop("DEVICE_API_KEY", None)
+            result = self.app.test_cli_runner().invoke(args=["register-device", str(uuid.uuid4())])
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("DEVICE_API_KEY must be set", result.output)
+
+    def test_device_identifier_must_be_a_uuid(self):
+        with patch.dict(os.environ, {"DEVICE_API_KEY": "collar-test-key"}):
+            result = self.app.test_cli_runner().invoke(args=["register-device", "band-42"])
+
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn("is not a valid UUID", result.output)
 
 
 if __name__ == "__main__":

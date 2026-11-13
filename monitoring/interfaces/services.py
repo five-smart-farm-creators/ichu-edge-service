@@ -174,7 +174,7 @@ def list_alerts():
 
 @monitoring_api.route("/api/v1/synchronizations", methods=["POST"])
 def synchronize():
-    """Refresh the cached rules and push pending records to the ICHU cloud."""
+    """Refresh the cached rules and assignments, then push pending records to the ICHU cloud."""
     try:
         result = current_app.extensions["synchronization_service"].synchronize()
     except SynchronizationDisabled:
@@ -192,4 +192,5 @@ def synchronize():
         "synced": result.synced,
         "rejected": result.rejected,
         "deferred": result.deferred,
+        "assignments": result.assignments,
     }), 200

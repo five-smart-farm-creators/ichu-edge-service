@@ -22,9 +22,17 @@ from monitoring.application.services import (
     SyncResult,
 )
 from monitoring.domain.entities import MonitoringAlert, MonitoringRuleSet, SubmittingDevice, TelemetryReading
-from monitoring.domain.value_objects import AlertSeverity, AlertType, SyncStatus
+from monitoring.domain.value_objects import (
+    AlertSeverity,
+    AlertType,
+    DeviceAssignment,
+    MonitoredMetric,
+    SyncStatus,
+    Threshold,
+)
 from monitoring.infrastructure.cloud_client import IchuCloudClient
 from monitoring.infrastructure.repositories import (
+    DeviceAssignmentRepository,
     MonitoringAlertRepository,
     MonitoringRuleSetRepository,
     TelemetryReadingRepository,
@@ -37,8 +45,14 @@ from shared.infrastructure.database import configure_database, db
 
 
 DEVICE_ID = "9d4a5f3b-3a6e-4f84-8daa-4e5f6a7b8c93"
+OTHER_DEVICE_ID = "ae5b6a4c-4b7f-4a95-9ebb-5f6a7b8c9da4"
+LOT_ID = "6a1f2c0e-0d3b-4c51-9a77-1b2c3d4e5f60"
+CATTLE_ID = "4f1e7c2b-9a3d-4e8f-8b6c-2d5a7e9f1b03"
+RANCH_ID = "a3b7c9d1-2e4f-4a6b-8c8d-0e1f2a3b4c5d"
 NOW = datetime(2026, 11, 7, 12, tzinfo=UTC)
 GATEWAY_ID = "c07d8c6e-6d9b-4cb7-9add-7b8c9daebfc6"
+DEVICE_KEY = "device-test-key"
+READINGS_PATH = "/api/v1/monitoring/telemetry-readings"
 
 
 class FakeReadingRepository:
@@ -79,12 +93,21 @@ class FakeRuleRepository:
         return rule_set
 
 
+class FakeAssignmentRepository:
+    def __init__(self):
+        self.assignments = []
+
+    def replace_all(self, assignments):
+        self.assignments = list(assignments)
+
+
 class FakeCloudGateway:
-    def __init__(self, rule_sets=(), batch_results=None, error=None, refused_reading_ids=()):
+    def __init__(self, rule_sets=(), batch_results=None, error=None, refused_reading_ids=(), assignments=()):
         self.rule_sets = list(rule_sets)
         self.batch_results = batch_results
         self.error = error
         self.refused_reading_ids = set(refused_reading_ids)
+        self.assignments = list(assignments)
         self.fetch_requests = []
         self.sent_batches = []
 
@@ -93,6 +116,11 @@ class FakeCloudGateway:
         if self.error is not None:
             raise self.error
         return self.rule_sets.pop(0)
+
+    def fetch_assignments(self):
+        if self.error is not None:
+            raise self.error
+        return list(self.assignments)
 
     def send_batch(self, readings, alerts):
         self.sent_batches.append((list(readings), list(alerts)))
@@ -118,7 +146,12 @@ class SynchronizationServiceTestCase(unittest.TestCase):
         newer = MonitoringRuleSet(uuid.uuid4(), 3, (), ())
         cloud = FakeCloudGateway(rule_sets=(newer, None))
         service = SynchronizationService(
-            cloud, FakeReadingRepository([]), FakeAlertRepository([]), rule_repository, batch_size=10
+            cloud,
+            FakeReadingRepository([]),
+            FakeAlertRepository([]),
+            rule_repository,
+            FakeAssignmentRepository(),
+            batch_size=10,
         )
 
         first = service.refresh_rules()
@@ -145,7 +178,7 @@ class SynchronizationServiceTestCase(unittest.TestCase):
                 CloudEntryResult("Alert", str(alert.alert_id), "Duplicate"),
             )
         )
-        service = SynchronizationService(cloud, readings, alerts, FakeRuleRepository(), batch_size=10)
+        service = SynchronizationService(cloud, readings, alerts, FakeRuleRepository(), FakeAssignmentRepository(), batch_size=10)
 
         result = service.push_pending()
 
@@ -164,7 +197,7 @@ class SynchronizationServiceTestCase(unittest.TestCase):
                 CloudEntryResult("Reading", str(reading.reading_id), "Conflict", "Different telemetry"),
             )
         )
-        service = SynchronizationService(cloud, readings, FakeAlertRepository([]), FakeRuleRepository(), batch_size=10)
+        service = SynchronizationService(cloud, readings, FakeAlertRepository([]), FakeRuleRepository(), FakeAssignmentRepository(), batch_size=10)
 
         first = service.push_pending()
 
@@ -186,7 +219,7 @@ class SynchronizationServiceTestCase(unittest.TestCase):
         last = make_reading("event-b", 38.7)
         readings = FakeReadingRepository([first, refused, last])
         cloud = FakeCloudGateway(refused_reading_ids=(refused.reading_id,))
-        service = SynchronizationService(cloud, readings, FakeAlertRepository([]), FakeRuleRepository(), batch_size=10)
+        service = SynchronizationService(cloud, readings, FakeAlertRepository([]), FakeRuleRepository(), FakeAssignmentRepository(), batch_size=10)
 
         result = service.push_pending()
 
@@ -208,7 +241,7 @@ class SynchronizationServiceTestCase(unittest.TestCase):
         reading = make_reading("event-r", 38.5)
         readings = FakeReadingRepository([reading])
         cloud = FakeCloudGateway(error=CloudUnavailable("offline"))
-        service = SynchronizationService(cloud, readings, FakeAlertRepository([]), FakeRuleRepository(), batch_size=10)
+        service = SynchronizationService(cloud, readings, FakeAlertRepository([]), FakeRuleRepository(), FakeAssignmentRepository(), batch_size=10)
 
         with self.assertRaises(CloudUnavailable):
             service.push_pending()
@@ -226,7 +259,7 @@ class SynchronizationServiceTestCase(unittest.TestCase):
         reading = make_reading("event-d", 38.5)
         readings = FakeReadingRepository([reading])
         cloud = FakeCloudGateway(batch_results=(CloudEntryResult("Reading", str(reading.reading_id), "Duplicate"),))
-        service = SynchronizationService(cloud, readings, FakeAlertRepository([]), FakeRuleRepository(), batch_size=10)
+        service = SynchronizationService(cloud, readings, FakeAlertRepository([]), FakeRuleRepository(), FakeAssignmentRepository(), batch_size=10)
 
         result = service.push_pending()
 
@@ -241,6 +274,7 @@ class SynchronizationServiceTestCase(unittest.TestCase):
             readings,
             FakeAlertRepository([]),
             FakeRuleRepository(),
+            FakeAssignmentRepository(),
             batch_size=10,
         )
 
@@ -255,13 +289,24 @@ class SynchronizationServiceTestCase(unittest.TestCase):
             FakeReadingRepository([]),
             FakeAlertRepository([]),
             FakeRuleRepository(),
+            FakeAssignmentRepository(),
             batch_size=10,
         )
 
         self.assertEqual(
             service.synchronize(),
-            SynchronizationResult(False, 0, 0, 0, 0, 0, 0),
+            SynchronizationResult(False, 0, 0, 0, 0, 0, 0, 0),
         )
+
+    def test_assignments_are_replaced_by_the_cloud_list_and_counted(self):
+        assignments = FakeAssignmentRepository()
+        cloud = FakeCloudGateway(assignments=(DeviceAssignment(DEVICE_ID, None, "Heifer"),))
+        service = SynchronizationService(
+            cloud, FakeReadingRepository([]), FakeAlertRepository([]), FakeRuleRepository(), assignments, batch_size=10
+        )
+
+        self.assertEqual(service.refresh_assignments(), 1)
+        self.assertEqual(assignments.assignments, [DeviceAssignment(DEVICE_ID, None, "Heifer")])
 
     def test_disabled_gateway_refuses_every_call(self):
         gateway = DisabledCloudAntiCorruptionLayer()
@@ -270,6 +315,8 @@ class SynchronizationServiceTestCase(unittest.TestCase):
             gateway.fetch_rules(0)
         with self.assertRaises(SynchronizationDisabled):
             gateway.send_batch([], [])
+        with self.assertRaises(SynchronizationDisabled):
+            gateway.fetch_assignments()
 
 
 class FakeResponse:
@@ -308,6 +355,8 @@ class IchuCloudClientTestCase(unittest.TestCase):
                 with self.assertRaises(CloudCredentialsRejected):
                     client.fetch_monitoring_rules(0)
                 with self.assertRaises(CloudCredentialsRejected):
+                    client.fetch_device_assignments()
+                with self.assertRaises(CloudCredentialsRejected):
                     client.send_telemetry_batch({"readings": [], "alerts": [], "alertChanges": []})
 
     def test_other_error_answers_raise_cloud_unavailable(self):
@@ -344,6 +393,58 @@ class IchuCloudClientTestCase(unittest.TestCase):
         self.assertEqual(url, "https://cloud.example.org/api/v1/telemetry/batch")
         self.assertEqual(kwargs["headers"]["X-Gateway-Key"], "gateway-test-key")
 
+    def test_assignments_are_fetched_from_the_gateway_path_with_the_key(self):
+        session = FakeSession(response=FakeResponse(200, {"ranchId": RANCH_ID, "assignments": []}))
+
+        make_client(session).fetch_device_assignments()
+
+        method, url, kwargs = session.calls[0]
+        self.assertEqual(method, "GET")
+        self.assertEqual(
+            url, f"https://cloud.example.org/api/v1/edge-gateways/{GATEWAY_ID}/device-assignments"
+        )
+        self.assertEqual(kwargs["headers"]["X-Gateway-Key"], "gateway-test-key")
+
+
+def cloud_assignment(device_id, lot_id, life_stage):
+    return {"deviceId": device_id, "cattleId": CATTLE_ID, "lotId": lot_id, "lifeStage": life_stage}
+
+
+class CloudAssignmentTranslationTestCase(unittest.TestCase):
+    def fetch(self, payload):
+        client = make_client(FakeSession(response=FakeResponse(200, payload)))
+        return IchuCloudAntiCorruptionLayer(client).fetch_assignments()
+
+    def test_translates_the_cloud_list_into_device_assignments(self):
+        payload = {
+            "ranchId": RANCH_ID,
+            "assignments": [
+                cloud_assignment(DEVICE_ID.upper(), LOT_ID, "MilkingCow"),
+                cloud_assignment(OTHER_DEVICE_ID, None, "Calf"),
+            ],
+        }
+
+        self.assertEqual(
+            self.fetch(payload),
+            [
+                DeviceAssignment(DEVICE_ID, uuid.UUID(LOT_ID), "MilkingCow"),
+                DeviceAssignment(OTHER_DEVICE_ID, None, "Calf"),
+            ],
+        )
+
+    def test_malformed_payloads_raise_cloud_unavailable(self):
+        malformed = (
+            {"ranchId": RANCH_ID},
+            {"assignments": None},
+            {"assignments": [cloud_assignment("band-42", None, "Calf")]},
+            {"assignments": [cloud_assignment(DEVICE_ID, "not-a-uuid", "Calf")]},
+            {"assignments": [{"deviceId": DEVICE_ID, "cattleId": CATTLE_ID, "lotId": None}]},
+        )
+        for payload in malformed:
+            with self.subTest(payload=payload):
+                with self.assertRaises(CloudUnavailable):
+                    self.fetch(payload)
+
 
 class SynchronizationCredentialsTestCase(unittest.TestCase):
     @classmethod
@@ -370,7 +471,12 @@ class SynchronizationCredentialsTestCase(unittest.TestCase):
         readings.save_idempotently(reading)
         cloud = IchuCloudAntiCorruptionLayer(make_client(FakeSession(response=FakeResponse(401))))
         self.app.extensions["synchronization_service"] = SynchronizationService(
-            cloud, readings, MonitoringAlertRepository(), MonitoringRuleSetRepository(), batch_size=10
+            cloud,
+            readings,
+            MonitoringAlertRepository(),
+            MonitoringRuleSetRepository(),
+            DeviceAssignmentRepository(),
+            batch_size=10,
         )
 
         response = self.app.test_client().post("/api/v1/synchronizations")
@@ -466,6 +572,101 @@ class LegacySchemaMigrationTestCase(unittest.TestCase):
         self.assertIn("sync_attempts", reading_columns)
         self.assertIn("sync_attempts", alert_columns)
         self.assertEqual([reading.sync_attempts for reading in pending], [0])
+
+
+class DeviceAssignmentRepositoryTestCase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.directory = tempfile.TemporaryDirectory(prefix="ichu-edge-assignments-", ignore_cleanup_errors=True)
+        environment = {
+            "APP_ENV": "development",
+            "DATABASE_PATH": os.path.join(cls.directory.name, "assignments.db"),
+            "SEED_DEVELOPMENT_DATA": "false",
+            "CLOUD_API_BASE_URL": "",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            from app import create_app
+
+            create_app()
+
+    def test_replace_all_drops_collars_missing_from_the_cloud_list(self):
+        repository = DeviceAssignmentRepository()
+        repository.replace_all(
+            [
+                DeviceAssignment(DEVICE_ID, uuid.UUID(LOT_ID), "MilkingCow"),
+                DeviceAssignment(OTHER_DEVICE_ID, None, "Calf"),
+            ]
+        )
+
+        repository.replace_all([DeviceAssignment(OTHER_DEVICE_ID, uuid.UUID(LOT_ID), "Heifer")])
+
+        self.assertIsNone(repository.find(DEVICE_ID))
+        self.assertEqual(
+            repository.find(OTHER_DEVICE_ID), DeviceAssignment(OTHER_DEVICE_ID, uuid.UUID(LOT_ID), "Heifer")
+        )
+
+    def test_replace_all_with_an_empty_list_clears_every_assignment(self):
+        repository = DeviceAssignmentRepository()
+        repository.replace_all([DeviceAssignment(DEVICE_ID, None, "MilkingCow")])
+
+        repository.replace_all([])
+
+        self.assertIsNone(repository.find(DEVICE_ID))
+
+
+def feverish_reading(event_id):
+    return {
+        "device_id": DEVICE_ID,
+        "event_id": event_id,
+        "recorded_at": "2026-11-07T10:00:00-05:00",
+        "body_temperature": 40.2,
+    }
+
+
+class AssignmentSynchronizationTestCase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.directory = tempfile.TemporaryDirectory(prefix="ichu-edge-assignment-sync-", ignore_cleanup_errors=True)
+        environment = {
+            "APP_ENV": "development",
+            "DATABASE_PATH": os.path.join(cls.directory.name, "assignment-sync.db"),
+            "SEED_DEVELOPMENT_DATA": "false",
+            "CLOUD_API_BASE_URL": "",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            from app import create_app
+
+            cls.app = create_app()
+        cls.app.testing = True
+
+    def test_assignment_downloaded_by_synchronization_applies_to_the_next_reading(self):
+        self.app.extensions["iam_authentication_service"].register_device(DEVICE_ID, DEVICE_KEY)
+        threshold = Threshold(
+            uuid.uuid4(), "MilkingCow", MonitoredMetric.BODY_TEMPERATURE, 37.5, 39.5, AlertSeverity.WARNING
+        )
+        gateway = FakeCloudGateway(
+            rule_sets=(MonitoringRuleSet(uuid.uuid4(), 4, (threshold,), ()),),
+            assignments=(DeviceAssignment(DEVICE_ID, None, "MilkingCow"),),
+        )
+        self.app.extensions["synchronization_service"] = SynchronizationService(
+            gateway,
+            TelemetryReadingRepository(),
+            MonitoringAlertRepository(),
+            MonitoringRuleSetRepository(),
+            DeviceAssignmentRepository(),
+            batch_size=10,
+        )
+        client = self.app.test_client()
+        headers = {"X-API-Key": DEVICE_KEY}
+
+        before = client.post(READINGS_PATH, json=feverish_reading("event-before-assignment"), headers=headers)
+        synchronized = client.post("/api/v1/synchronizations")
+        after = client.post(READINGS_PATH, json=feverish_reading("event-after-assignment"), headers=headers)
+
+        self.assertEqual(before.json["alerts"], [])
+        self.assertEqual(synchronized.status_code, 200)
+        self.assertEqual(synchronized.json["assignments"], 1)
+        self.assertEqual([alert["type"] for alert in after.json["alerts"]], ["Temperature"])
 
 
 if __name__ == "__main__":

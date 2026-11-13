@@ -429,3 +429,37 @@ every unanswered record stays `pending`.
 - Rejecting a conflict on the first answer, which discards telemetry a retry would accept.
 - Resending a refused batch unchanged, which the cloud refuses again.
 - Dropping an invalid entry without a reason, which hides it from operators.
+
+## ADR-0015: Collar assignments owned by the cloud
+
+- **Status**: Accepted
+- **Date**: 2026-11-12
+
+### Context
+
+The lot and life stage of the animal that wears each collar are decided in the ICHU cloud, and they
+change as the herd does. Assignments seeded on the gateway drift from the cloud, while the rule
+evaluator needs the current assignment to choose thresholds and geofences. A collar created only in
+the cloud has no local record, so it cannot authenticate either.
+
+### Decision
+
+Each synchronization downloads the assignments of the gateway's ranch after the rules and before the
+batches, and replaces the local table in one transaction, because the cloud's list is authoritative.
+Development seeding registers the development devices without assignments. A collar that exists only
+in the cloud is registered with `flask --app app register-device`, using the key issued for that collar
+from the `DEVICE_API_KEY` environment variable.
+
+### Consequences
+
+- Assignments are as current as the last successful synchronization; a change made while the gateway
+  is offline reaches the evaluator at the next one.
+- A collar that the cloud stops listing stops being evaluated at the next synchronization.
+- Each collar needs one registration per gateway, performed by an operator with the key issued for it.
+- A development collar is not evaluated until a synchronization has downloaded its assignment.
+
+### Alternatives considered
+
+- Keeping the lots and life stages in the development seed, which drifts from the cloud.
+- Merging the cloud list into the local table, which keeps assignments that the cloud has ended.
+- Creating collars from the assignment download, which needs a credential that the download does not carry.

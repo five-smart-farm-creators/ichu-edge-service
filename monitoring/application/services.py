@@ -20,7 +20,7 @@ from monitoring.domain.repositories import (
     TelemetryReadingRepository,
 )
 from monitoring.domain.services import RuleEvaluator
-from monitoring.domain.value_objects import GeoPosition, SyncStatus
+from monitoring.domain.value_objects import DeviceAssignment, GeoPosition, SyncStatus
 from monitoring.integration.iam_anti_corruption_layer import IamAntiCorruptionLayer
 
 logger = logging.getLogger(__name__)
@@ -69,7 +69,7 @@ class SyncResult:
 
 @dataclass(frozen=True)
 class SynchronizationResult:
-    """Combined outcome of a rules refresh and a batch push."""
+    """Combined outcome of a rules and assignments refresh and a batch push."""
 
     rules_updated: bool
     rules_revision: int
@@ -78,6 +78,7 @@ class SynchronizationResult:
     synced: int
     rejected: int
     deferred: int
+    assignments: int
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,10 @@ class CloudGateway(Protocol):
 
     def fetch_rules(self, after_revision: int) -> MonitoringRuleSet | None:
         """Return rules newer than ``after_revision``, or ``None`` when unchanged."""
+        ...
+
+    def fetch_assignments(self) -> list[DeviceAssignment]:
+        """Return the collar assignments that the cloud lists for this gateway's ranch."""
         ...
 
     def send_batch(
@@ -230,6 +235,7 @@ class SynchronizationService:
         reading_repository: TelemetryReadingRepository,
         alert_repository: MonitoringAlertRepository,
         rule_repository: MonitoringRuleSetRepository,
+        assignment_repository: DeviceAssignmentRepository,
         batch_size: int,
     ):
         """Initialize the service with the cloud port and its repositories."""
@@ -237,6 +243,7 @@ class SynchronizationService:
         self._readings = reading_repository
         self._alerts = alert_repository
         self._rules = rule_repository
+        self._assignments = assignment_repository
         self._batch_size = batch_size
 
     def refresh_rules(self) -> RuleRefreshResult:
@@ -247,6 +254,12 @@ class SynchronizationService:
             return RuleRefreshResult(False, current.revision)
         self._rules.replace(fetched)
         return RuleRefreshResult(True, fetched.revision)
+
+    def refresh_assignments(self) -> int:
+        """Replace the cached assignments with the cloud's list, which is authoritative."""
+        assignments = self._cloud.fetch_assignments()
+        self._assignments.replace_all(assignments)
+        return len(assignments)
 
     def push_pending(self) -> SyncResult:
         """Send one batch of pending records and apply the per-entry answer; missing entries stay pending."""
@@ -334,9 +347,10 @@ class SynchronizationService:
         return record.defer_retry(reason, MAX_SYNC_ATTEMPTS)
 
     def synchronize(self) -> SynchronizationResult:
-        """Refresh the cached rules, then push pending records."""
+        """Refresh the cached rules and assignments, then push pending records."""
         try:
             refresh = self.refresh_rules()
+            assignments = self.refresh_assignments()
             push = self.push_pending()
         except CloudUnavailable:
             logger.warning("Cloud synchronization deferred; records remain pending")
@@ -345,7 +359,9 @@ class SynchronizationService:
             logger.warning("ICHU cloud rejected the edge gateway credentials; records remain pending")
             raise
         logger.info(
-            "Synchronized %d readings and %d alerts (%d synced, %d rejected, %d deferred)",
+            "Refreshed %d assignments; synchronized %d readings and %d alerts "
+            "(%d synced, %d rejected, %d deferred)",
+            assignments,
             push.sent_readings,
             push.sent_alerts,
             push.synced,
@@ -360,6 +376,7 @@ class SynchronizationService:
             push.synced,
             push.rejected,
             push.deferred,
+            assignments,
         )
 
     @staticmethod

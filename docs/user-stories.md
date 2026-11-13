@@ -23,6 +23,7 @@ match the bounded contexts IAM and Monitoring.
 | TS-EDGE-005 | Deduplicate Alerts Within a Window | Monitoring | `monitoring/application/services.py`: `TelemetryIngestionService.ingest`; `monitoring/infrastructure/repositories.py`: `MonitoringAlertRepository.find_recent` |
 | TS-EDGE-006 | Synchronize with the ICHU Cloud API | Monitoring | `monitoring/application/services.py`: `SynchronizationService`; `monitoring/integration/cloud_anti_corruption_layer.py`: `IchuCloudAntiCorruptionLayer`, `DisabledCloudAntiCorruptionLayer`; `monitoring/infrastructure/cloud_client.py`: `IchuCloudClient`; `monitoring/interfaces/services.py`: `synchronize`; `monitoring/interfaces/commands.py`: `synchronize_command`, `run_synchronizer`, `next_delay_seconds` |
 | TS-EDGE-007 | Bootstrap Storage and Configuration | Application bootstrap; shared infrastructure | `app.py`: `create_app`, `seed_development_data`; `config.py`: `load_config`; `shared/infrastructure/database.py`: `configure_database`, `init_db` |
+| TS-EDGE-008 | Refresh Collar Assignments from the Cloud | Monitoring; IAM | `monitoring/integration/cloud_anti_corruption_layer.py`: `IchuCloudAntiCorruptionLayer.fetch_assignments`; `monitoring/application/services.py`: `SynchronizationService.refresh_assignments`; `monitoring/infrastructure/repositories.py`: `DeviceAssignmentRepository.replace_all`; `iam/interfaces/commands.py`: `register_device_command` |
 
 ---
 
@@ -264,10 +265,50 @@ Acceptance criteria:
 - Scenario: Development seeding
   - Given `SEED_DEVELOPMENT_DATA=true` and a development device key
   - When the application is created
-  - Then the development devices and their lot assignments exist
-  - And existing devices and assignments are not overwritten
+  - Then the development devices exist without lot assignments
+  - And existing devices are not overwritten
 
 - Scenario: Requests do not trigger bootstrap work
   - Given the application has been created
   - When the gateway receives an HTTP request
   - Then request handling does not rerun schema creation or migrations
+
+---
+
+### TS-EDGE-008 — Refresh Collar Assignments from the Cloud
+
+As a ranch operator, I want the lot and life stage of each collar to come from the cloud so that
+thresholds and geofences apply to the animal that wears it.
+
+Acceptance criteria:
+
+- Scenario: Assignments replaced by the cloud list
+  - Given the gateway caches assignments for collars `A` and `B`
+  - When it synchronizes and the cloud lists only `B`, with a new lot
+  - Then `B` takes the new lot and life stage
+  - And `A` no longer has an assignment
+
+- Scenario: Assignment applied to the next reading
+  - Given collar `D` has no assignment on the gateway
+  - And the cached rules have a body temperature threshold for `MilkingCow`
+  - When a synchronization downloads an assignment of `D` to `MilkingCow`
+  - And `D` then submits a body temperature above that threshold
+  - Then a `Temperature` alert is raised
+
+- Scenario: Collar without a cloud assignment
+  - Given the cloud lists no assignment for collar `D`
+  - When `D` submits a reading
+  - Then no rule is evaluated and no alert is raised
+
+- Scenario: Malformed assignment list
+  - Given the cloud answers with an assignment whose `deviceId` is not a UUID
+  - When an operator calls `POST /api/v1/synchronizations`
+  - Then the response is `503 Service Unavailable`
+  - And the cached assignments are kept
+  - And every pending record remains `pending`
+
+- Scenario: Collar known only to the cloud
+  - Given the cloud assigns collar `D`, which the gateway has not registered
+  - When an operator runs `flask --app app register-device D` with `DEVICE_API_KEY` set to the key of `D`
+  - Then `D` authenticates with that key
+  - And a second run reports that `D` is already registered and changes nothing

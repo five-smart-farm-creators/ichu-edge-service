@@ -10,6 +10,7 @@ from monitoring.domain.entities import MonitoringAlert, MonitoringRuleSet, Telem
 from monitoring.domain.value_objects import (
     AlertSeverity,
     Coordinate,
+    DeviceAssignment,
     Geofence,
     MonitoredMetric,
     Threshold,
@@ -36,6 +37,16 @@ class IchuCloudAntiCorruptionLayer:
                 "The ICHU cloud API returned an unexpected monitoring rules payload"
             ) from error
 
+    def fetch_assignments(self) -> list[DeviceAssignment]:
+        """Return the collar assignments that the cloud lists for this gateway's ranch."""
+        payload = self._client.fetch_device_assignments()
+        try:
+            return _assignments_from_contract(payload)
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            raise CloudUnavailable(
+                "The ICHU cloud API returned an unexpected device assignments payload"
+            ) from error
+
     def send_batch(
         self, readings: list[TelemetryReading], alerts: list[MonitoringAlert]
     ) -> list[CloudEntryResult]:
@@ -53,6 +64,10 @@ class DisabledCloudAntiCorruptionLayer:
 
     def fetch_rules(self, after_revision: int) -> MonitoringRuleSet | None:
         """Refuse to fetch rules because synchronization is disabled."""
+        raise SynchronizationDisabled
+
+    def fetch_assignments(self) -> list[DeviceAssignment]:
+        """Refuse to fetch assignments because synchronization is disabled."""
         raise SynchronizationDisabled
 
     def send_batch(
@@ -130,6 +145,17 @@ def _entry_results_from_contract(response: dict[str, Any]) -> list[CloudEntryRes
                 "The ICHU cloud API returned an unexpected batch answer"
             ) from error
     return results
+
+
+def _assignments_from_contract(payload: dict[str, Any]) -> list[DeviceAssignment]:
+    return [
+        DeviceAssignment(
+            str(uuid.UUID(item["deviceId"])),
+            None if item["lotId"] is None else uuid.UUID(item["lotId"]),
+            item["lifeStage"],
+        )
+        for item in payload["assignments"]
+    ]
 
 
 def _rule_set_from_contract(payload: dict[str, Any]) -> MonitoringRuleSet:

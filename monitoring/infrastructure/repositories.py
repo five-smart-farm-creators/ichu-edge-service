@@ -377,3 +377,20 @@ class DeviceAssignmentRepository:
             life_stage=assignment.life_stage,
         ).execute()
         return assignment
+
+    def replace_all(self, assignments: list[DeviceAssignment]) -> None:
+        """Replace every assignment in one transaction; the cloud list is authoritative."""
+        database = DeviceAssignmentModel._meta.database
+        with database.atomic("IMMEDIATE"):
+            DeviceAssignmentModel.delete().execute()
+            if assignments:
+                DeviceAssignmentModel.insert_many(
+                    [
+                        {
+                            "device_id": assignment.device_id,
+                            "lot_id": None if assignment.lot_id is None else str(assignment.lot_id),
+                            "life_stage": assignment.life_stage,
+                        }
+                        for assignment in assignments
+                    ]
+                ).execute()

@@ -40,6 +40,11 @@ class IchuCloudClient:
             return None
         return self._json_object(response)
 
+    def fetch_device_assignments(self) -> dict[str, Any]:
+        """Fetch the collar assignments that the cloud authorizes for this gateway's ranch."""
+        url = f"{self._base_url}/api/v1/edge-gateways/{self._gateway_id}/device-assignments"
+        return self._json_object(self._send("GET", url))
+
     def send_telemetry_batch(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Push one batch of readings and alerts and return the cloud's answer."""
         url = f"{self._base_url}/api/v1/telemetry/batch"

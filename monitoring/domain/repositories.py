@@ -88,3 +88,7 @@ class DeviceAssignmentRepository(Protocol):
     def save(self, assignment: DeviceAssignment) -> DeviceAssignment:
         """Insert or update the assignment of a device."""
         ...
+
+    def replace_all(self, assignments: list[DeviceAssignment]) -> None:
+        """Replace every assignment with the cloud's list, which is authoritative."""
+        ...
