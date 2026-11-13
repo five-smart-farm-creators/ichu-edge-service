@@ -14,6 +14,7 @@ from app import create_app
 from monitoring.domain.entities import MonitoringRuleSet
 from monitoring.domain.value_objects import AlertSeverity, DeviceAssignment, MonitoredMetric, Threshold
 from monitoring.infrastructure.repositories import DeviceAssignmentRepository, MonitoringRuleSetRepository
+from shared.infrastructure.database import db
 
 
 DEVICE_KEY = "test-only-key"
@@ -55,6 +56,11 @@ class StatusApiTestCase(ApiTestCase):
         self.assertIsInstance(response.json["rulesRevision"], int)
         self.assertIsInstance(response.json["pendingReadings"], int)
         self.assertIsInstance(response.json["pendingAlerts"], int)
+
+
+class DatabaseTestCase(ApiTestCase):
+    def test_uses_write_ahead_logging(self):
+        self.assertEqual(db.execute_sql("PRAGMA journal_mode").fetchone()[0], "wal")
 
 
 class IamApiTestCase(ApiTestCase):

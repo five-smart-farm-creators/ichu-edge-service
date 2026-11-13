@@ -44,23 +44,32 @@ def _as_int(name: str, value: str, minimum: int, maximum: int) -> int:
     return number
 
 
-def _optional_uuid(name: str, value: str) -> str | None:
+def _gateway_identity(value: str) -> tuple[str | None, str | None]:
+    """Read the gateway id from an issued key, so the id cannot drift from the key."""
     normalized = value.strip()
     if not normalized:
-        return None
+        return None, None
+    gateway_part, separator, secret = normalized.partition(".")
     try:
-        return str(uuid.UUID(normalized))
+        gateway_id = str(uuid.UUID(gateway_part))
     except ValueError as error:
-        raise ValueError(f"{name} must be a UUID") from error
+        raise ValueError("EDGE_GATEWAY_KEY must have the form {gatewayId}.{secret}") from error
+    if not separator or not secret.strip():
+        raise ValueError("EDGE_GATEWAY_KEY must have the form {gatewayId}.{secret}")
+    return gateway_id, normalized
 
 
-def _optional_base_url(value: str) -> str | None:
+def _optional_base_url(value: str, environment_name: str) -> str | None:
     normalized = value.strip().rstrip("/")
     if not normalized:
         return None
     parsed = urlparse(normalized)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("CLOUD_API_BASE_URL must be an http or https URL")
+    # The gateway key travels in a header, so it must not cross the Internet in clear text.
+    is_local_host = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+    if environment_name == "production" and parsed.scheme != "https" and not is_local_host:
+        raise ValueError("CLOUD_API_BASE_URL must use https in production")
     return normalized
 
 
@@ -110,14 +119,12 @@ def load_config(project_root: Path) -> AppConfig:
     if seed_development_data and not device_api_key:
         raise ValueError("DEVELOPMENT_DEVICE_API_KEY is required when seeding is enabled")
 
-    cloud_api_base_url = _optional_base_url(_required(values, "CLOUD_API_BASE_URL"))
-    gateway_id = _optional_uuid("EDGE_GATEWAY_ID", _required(values, "EDGE_GATEWAY_ID"))
-    gateway_key = _required(values, "EDGE_GATEWAY_KEY").strip() or None
-    if cloud_api_base_url is not None:
-        if gateway_id is None:
-            raise ValueError("EDGE_GATEWAY_ID is required when CLOUD_API_BASE_URL is set")
-        if gateway_key is None:
-            raise ValueError("EDGE_GATEWAY_KEY is required when CLOUD_API_BASE_URL is set")
+    cloud_api_base_url = _optional_base_url(
+        _required(values, "CLOUD_API_BASE_URL"), environment_name
+    )
+    gateway_id, gateway_key = _gateway_identity(_required(values, "EDGE_GATEWAY_KEY"))
+    if cloud_api_base_url is not None and gateway_key is None:
+        raise ValueError("EDGE_GATEWAY_KEY is required when CLOUD_API_BASE_URL is set")
 
     return {
         "APP_ENV": environment_name,

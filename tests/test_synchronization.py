@@ -274,7 +274,7 @@ class SynchronizationCredentialsTestCase(unittest.TestCase):
             "DATABASE_PATH": os.path.join(cls.directory.name, "credentials.db"),
             "SEED_DEVELOPMENT_DATA": "false",
             "CLOUD_API_BASE_URL": "https://cloud.example.org",
-            "EDGE_GATEWAY_KEY": "gateway-test-key",
+            "EDGE_GATEWAY_KEY": f"{GATEWAY_ID}.gateway-test-key",
         }
         with patch.dict(os.environ, environment, clear=True):
             from app import create_app

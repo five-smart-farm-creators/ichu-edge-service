@@ -9,10 +9,17 @@ individually.
 
 ## [Unreleased]
 
+### Added
+
+- GitHub Actions `test` job that runs the unit test suite on pull requests.
+
 ### Changed
 
 - Documented the backend gateway key format `{gatewayId}.{secret}` and the key of the
   seeded development gateway, which replaces the backend's development simulation.
+- The gateway id is derived from `EDGE_GATEWAY_KEY`; `EDGE_GATEWAY_ID` is removed.
+- Production requires an https `CLOUD_API_BASE_URL`, except for localhost.
+- SQLite runs in WAL mode so reads continue while another process writes.
 
 ## [0.1.0] - 2026-11-07
 

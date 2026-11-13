@@ -336,3 +336,28 @@ evaluated most severe first, so the most severe alert wins within one reading.
 
 - One alert per reading, which floods operators.
 - Deduplication by severity change, which needs extra state per alert.
+
+## ADR-0012: Derive the gateway identity from the issued key
+
+- **Status**: Accepted
+- **Date**: 2026-11-12
+
+### Context
+
+The backend issues each gateway key as `{gatewayId}.{secret}`. A separate `EDGE_GATEWAY_ID`
+setting could disagree with the key it accompanies, and telemetry would then be sent under a
+gateway identity that the key does not match.
+
+### Decision
+
+Read the gateway id from the part of `EDGE_GATEWAY_KEY` before the first `.`, which must be a
+UUID. `EDGE_GATEWAY_ID` is no longer a setting.
+
+### Consequences
+
+- The configuration holds one value that identifies the gateway, so the two cannot drift.
+- A malformed key fails at startup, even when cloud synchronization is disabled.
+
+### Alternatives considered
+
+- Keeping `EDGE_GATEWAY_ID` and checking it against the key, which keeps two values that must agree.
