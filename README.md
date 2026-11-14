@@ -330,6 +330,96 @@ assignment and rules (see [Synchronization with the Cloud](#synchronization-with
 Without an assignment, it answers `201` with `alerts=-`. The script exits with `0` when every
 reading gets `200` or `201`, with `1` when a reading fails, and with `2` when no key is set.
 
+## Local End-to-End Demo
+
+This walk-through shows the whole path on one computer: collar, edge, ICHU backend, and web
+application. Each step checks one segment, so a failure points to the segment that broke.
+
+Before you start:
+
+- The ICHU backend (`ichu-web-service`) runs in the Development environment on `http://localhost:5099`
+  with its development seed, which creates the ranch, the collars, the gateway, and the monitoring rules.
+- The web application (`ichu-web-app`) runs with `npm start`, and you are signed in as the demo
+  manager described in the backend README.
+- The development gateway key is listed in the backend README. Store it as the `EDGE_GATEWAY_KEY` user
+  environment variable, as shown in [Synchronization with the Cloud](#synchronization-with-the-cloud).
+- The `DEVICE_API_KEY` user environment variable holds the device key that the edge seeds and that the
+  simulator sends. To use the Wokwi firmware too, give it the `kDeviceApiKey` value of the collar and panel
+  secrets files, which is `development-device-key` in their example files.
+
+### 1. Start the edge
+
+In a first terminal, load the gateway key, enable seeding, and start the service:
+
+```powershell
+$env:APP_ENV = "development"
+$env:SEED_DEVELOPMENT_DATA = "true"
+$env:DEVELOPMENT_DEVICE_API_KEY = [Environment]::GetEnvironmentVariable('DEVICE_API_KEY','User')
+$env:CLOUD_API_BASE_URL = "http://localhost:5099"
+$env:EDGE_GATEWAY_KEY = [Environment]::GetEnvironmentVariable('EDGE_GATEWAY_KEY','User')
+.\.venv\Scripts\python app.py
+```
+
+`curl http://127.0.0.1:5000/api/v1/status` answers `"status": "ok"` with `rulesRevision` `0`.
+
+### 2. Download the rules and assignments
+
+In a second terminal, with the same variables, run one cycle and then leave the synchronizer running:
+
+```powershell
+.\.venv\Scripts\flask --app app synchronize --once
+.\.venv\Scripts\flask --app app synchronize
+```
+
+The status now shows a `rulesRevision` greater than `0`. Without this step the collars have no
+assignment, so the edge stores their readings but raises no alerts.
+
+### 3. Send a normal reading
+
+In a third terminal, run `.\.venv\Scripts\python scripts\simulate_collar.py --mode normal`. The edge
+answers `201` with `alerts=-`. Within one synchronizer cycle (15 s by default), the reading appears in the
+animal's telemetry in the web application.
+
+### 4. Raise an alert
+
+Run the simulator with `--mode fever`. The edge answers `201` with `alerts=Temperature/Critical` at once,
+before the cloud knows about the reading. After the next cycle, the alert is listed on
+the web application's alert screen. `--mode escape` raises a `Geofence/Warning` alert in the same way.
+The edge does not raise the same type of alert again for that collar within `ALERT_DEDUPLICATION_MINUTES`.
+
+### 5. Lose and recover the cloud
+
+1. Stop the backend.
+2. Send three readings with `--mode normal --count 3 --interval 2`. The edge still answers `201`, the
+   synchronizer logs failed cycles, and `pendingReadings` in the status rises to `3`.
+3. Start the backend again. Within the back-off wait, which is at most 5 minutes, the synchronizer sends the
+   pending readings and `pendingReadings` returns to `0`.
+4. In the web application, each of the three readings appears once. A retried batch is answered as
+   `Duplicate`, so nothing is stored twice.
+
+### 6. Use the real firmware
+
+The Wokwi projects of the collar
+([`ichu-cattle-band-embedded-app`](https://github.com/five-smart-farm-creators/ichu-cattle-band-embedded-app))
+and the alert panel
+([`ichu-alert-panel-embedded-app`](https://github.com/five-smart-farm-creators/ichu-alert-panel-embedded-app))
+reach this edge at `http://host.wokwi.internal:5000` from Wokwi for VS Code. Repeat steps 3 and 4 with the
+simulated collar. The panel turns from `NORMAL` to `URGENT` and sounds its buzzer when a Critical alert arrives.
+
+### Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| A physical ESP32 cannot reach `localhost` | `localhost` is the ESP32 itself. Use the computer's LAN address, for example `http://192.168.1.20:5000`, and start the edge with `HOST=0.0.0.0`, only on a trusted local network. |
+| The ESP32 connects to Wi-Fi but gets no answer | Allow Python through Windows Firewall for private networks, and make sure the network profile is private. |
+| The ESP32 never joins the network | The ESP32 supports only 2.4 GHz Wi-Fi. |
+| The ESP32 and the computer are on the university network but cannot see each other | Campus networks isolate clients. Use a phone hotspot. |
+| Readings are accepted but raise no alerts | The collar has no assignment or the rules are not downloaded. Run step 2 and check `rulesRevision`. |
+| A reading gets `400` | A value is outside the contract, for example a body temperature outside 30–45 °C. The error body names the field. |
+| The synchronizer reports rejected gateway credentials | `EDGE_GATEWAY_KEY` does not match a gateway registered in the backend, or the variable was not loaded into this terminal. |
+| The first cycle against Render times out | The free plan sleeps when idle and can take about a minute to wake up. The next cycle retries. |
+| Alerts appear at the wrong time | Every component uses UTC. Check the clock of the computer and the NTP access of the devices. |
+
 ## API Contract
 
 Device-facing payloads use `snake_case`. The status and synchronization responses

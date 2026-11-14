@@ -11,6 +11,8 @@ individually.
 
 ### Added
 
+- README guide for a local end-to-end demo (collar, edge, backend, and web application) with a
+  troubleshooting table.
 - GitHub Actions `test` job that runs the unit test suite on pull requests.
 - Periodic synchronizer command, `flask --app app synchronize`, with `--interval` and `--once`,
   back-off after failed cycles, and a clean stop on Ctrl+C.
