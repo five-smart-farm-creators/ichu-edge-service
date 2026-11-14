@@ -30,9 +30,12 @@ individually.
   retry rules to the edge, for tests without hardware.
 - `heart_rate` (30 to 200 bpm) and `methane_index` (0 to 100, an uncalibrated MQ-2 index, not ppm) in
   telemetry readings. Both are optional, echoed in the response, and sent to the cloud as `heartRate`
-  and `methaneIndex`. A `HeartRate` threshold raises a `HeartRate` alert; the methane index has no
-  rule. Existing databases gain the columns when the service starts.
-- Collar simulator `tachycardia` mode; every simulated reading now includes a `methane_index` and
+  and `methaneIndex`. A `HeartRate` threshold raises a `HeartRate` alert, and a `MethaneIndex` threshold
+  raises a `Methane` alert. Existing databases gain the columns when the service starts.
+- Warning and Critical thresholds for the same metric and life stage. A reading that breaks both raises
+  one alert, at the Critical severity.
+- Collar simulator modes `tachycardia` (85 to 89 bpm, a Warning), `tachycardia-critical` (100 to 120 bpm),
+  `methane-spike`, and `methane-critical`. Every simulated reading now includes a `methane_index` and
   either a `heart_rate` or the reason its pulse sensor failed.
 
 ### Changed
@@ -51,6 +54,8 @@ individually.
   outside than the tolerance plus the GPS accuracy.
 - A threshold for a metric that the edge does not know is skipped with a warning, so the other
   rules still apply after the cloud adds a metric.
+- Alert deduplication compares severity: a recent alert of the same type suppresses a new one only when
+  its severity is equal or higher, so a violation that worsens within the window raises a new alert.
 
 ## [0.1.0] - 2026-11-07
 

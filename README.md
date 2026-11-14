@@ -20,7 +20,7 @@ The service implements the edge side of the monitoring capability:
   - device authentication with `device_id` and `X-API-Key`
   - ingestion of body temperature, activity index, battery level and GPS position
   - idempotent persistence in SQLite with a per-reading synchronization status
-  - local alerting from cached thresholds and geofences, with deduplication
+  - local alerting from cached thresholds and geofences, with deduplication by severity
   - store-and-forward synchronization of readings and alerts in batches
   - periodic synchronization as a separate command (`flask --app app synchronize`)
   - refresh of the cached monitoring rules from the cloud, with revision checks
@@ -242,8 +242,10 @@ Monitoring then processes each reading in this order:
 3. A retry of an accepted reading returns the stored reading and raises no alerts.
 4. A new reading is evaluated against the cached thresholds and geofences of its
    device assignment.
-5. Each violation becomes an alert unless an alert of the same type was raised for
-   the device within `ALERT_DEDUPLICATION_MINUTES`.
+5. Each violation becomes an alert unless the device raised an alert of the same type with equal or
+   higher severity within `ALERT_DEDUPLICATION_MINUTES`. A worsening condition, such as a Warning that
+   becomes Critical, raises a new alert. A reading that breaks both the Warning and the Critical rules
+   of one metric raises a single violation, at the Critical severity.
 
 A measurement with an invalid reason has no value, so it is not evaluated. A geofence
 is violated only when the position is farther outside its polygon than the geofence
@@ -292,10 +294,16 @@ Modes (`--mode`):
 - `escape`: a position about 2 km outside the development lot, and heart rate from 55 to 75 bpm.
 - `sensor-failure`: no `body_temperature` or `heart_rate`, and `invalid_reasons` reports both
   failed sensors.
-- `tachycardia`: heart rate from 110 to 130 bpm, above the 84 bpm maximum of the development rule.
+- `tachycardia`: heart rate from 85 to 89 bpm, above the 84 bpm Warning maximum of the development
+  rules but within their 90 bpm Critical maximum, so it raises a Warning.
+- `tachycardia-critical`: heart rate from 100 to 120 bpm, above the 90 bpm Critical maximum.
+- `methane-spike`: methane index from 70 to 80, above the 60 Warning maximum but within the 80 Critical
+  maximum, so it raises a Warning, and heart rate from 55 to 75 bpm.
+- `methane-critical`: methane index from 85 to 95, above the 80 Critical maximum, and heart rate from
+  55 to 75 bpm.
 
-Every mode sends a `methane_index` from 10 to 30. It is an index from an uncalibrated MQ-2 sensor,
-not a concentration in ppm.
+Every mode except `methane-spike` and `methane-critical` sends a `methane_index` from 10 to 30. It is an
+index from an uncalibrated MQ-2 sensor, not a concentration in ppm.
 
 Run `python scripts/simulate_collar.py --help` for `--edge-url`, `--device-id`, `--count`,
 `--interval`, and `--seed`.
@@ -392,7 +400,8 @@ animal's telemetry in the web application.
 Run the simulator with `--mode fever`. The edge answers `201` with `alerts=Temperature/Critical` at once,
 before the cloud knows about the reading. After the next cycle, the alert is listed on
 the web application's alert screen. `--mode escape` raises a `Geofence/Warning` alert in the same way.
-The edge does not raise the same type of alert again for that collar within `ALERT_DEDUPLICATION_MINUTES`.
+The edge does not raise an alert of the same type and severity again for that collar within
+`ALERT_DEDUPLICATION_MINUTES`, but a more severe one is raised at once.
 
 ### 5. Lose and recover the cloud
 
@@ -619,8 +628,8 @@ not filtered by device; `device_id` only authenticates the caller.
 #### Responses
 
 - `200 OK`: body holds `alerts`, each with `alert_id`, `device_id`, `type`
-  (`Temperature`, `Activity`, or `Geofence`), `severity` (`Informative`, `Warning`, or
-  `Critical`), `reading_ids`, `configuration_revision`, `raised_at`, the threshold or
+  (`Temperature`, `Activity`, `HeartRate`, `Methane`, or `Geofence`), `severity` (`Informative`,
+  `Warning`, or `Critical`), `reading_ids`, `configuration_revision`, `raised_at`, the threshold or
   geofence fields, and `sync_status`
 - `400 Bad Request`: `limit` is not an integer from 1 to 100
 - `401 Unauthorized`: missing `device_id` or `X-API-Key`, or a device and key pair that does not match

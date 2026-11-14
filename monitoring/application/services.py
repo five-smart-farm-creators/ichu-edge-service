@@ -185,7 +185,8 @@ class TelemetryIngestionService:
         raised: list[MonitoringAlert] = []
         for violation in violations:
             recent = self._alerts.find_recent(submitting_device.device_id, violation.type, since)
-            if recent is not None:
+            # Escalations raise a newer alert, so the newest recent one holds the window's highest severity.
+            if recent is not None and recent.severity.urgency >= violation.severity.urgency:
                 continue
             alert = MonitoringAlert.raise_for(
                 submitting_device.device_id,

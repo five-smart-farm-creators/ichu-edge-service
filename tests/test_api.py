@@ -346,9 +346,23 @@ class AlertsApiTestCase(ApiTestCase):
                         39.5,
                         AlertSeverity.WARNING,
                     ),
+                    Threshold(
+                        uuid.uuid4(),
+                        "Calf",
+                        MonitoredMetric.BODY_TEMPERATURE,
+                        36.0,
+                        40.5,
+                        AlertSeverity.CRITICAL,
+                    ),
                 ),
                 (),
             )
+        )
+
+    def post_calf_temperature(self, event_id, temperature):
+        return self.post_reading(
+            reading_payload(event_id, device_id=self.calf_device_id, body_temperature=temperature),
+            api_key="calf-test-key",
         )
 
     def test_raises_alert_once_and_deduplicates_within_the_window(self):
@@ -370,6 +384,22 @@ class AlertsApiTestCase(ApiTestCase):
         self.assertEqual(alert["reading_ids"], [first.json["reading"]["reading_id"]])
         self.assertEqual(second.status_code, 201)
         self.assertEqual(second.json["alerts"], [])
+
+    def test_critical_violation_escalates_past_a_recent_warning(self):
+        warning = self.post_calf_temperature("calf-escalation-1", 40.2)
+        critical = self.post_calf_temperature("calf-escalation-2", 40.8)
+        repeated = self.post_calf_temperature("calf-escalation-3", 40.9)
+
+        self.assertEqual([alert["severity"] for alert in warning.json["alerts"]], ["Warning"])
+        self.assertEqual([alert["severity"] for alert in critical.json["alerts"]], ["Critical"])
+        self.assertEqual(repeated.json["alerts"], [])
+
+    def test_warning_does_not_repeat_a_recent_critical(self):
+        critical = self.post_calf_temperature("calf-downgrade-1", 40.8)
+        warning = self.post_calf_temperature("calf-downgrade-2", 40.2)
+
+        self.assertEqual([alert["severity"] for alert in critical.json["alerts"]], ["Critical"])
+        self.assertEqual(warning.json["alerts"], [])
 
     def test_lists_latest_alerts_for_the_authenticated_device(self):
         self.post_reading(

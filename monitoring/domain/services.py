@@ -15,15 +15,11 @@ from monitoring.domain.value_objects import (
 
 EARTH_RADIUS_METERS = 6_371_000.0
 
-_SEVERITY_RANK = {
-    AlertSeverity.INFORMATIVE: 0,
-    AlertSeverity.WARNING: 1,
-    AlertSeverity.CRITICAL: 2,
-}
 _METRIC_ALERT_TYPES = {
     MonitoredMetric.BODY_TEMPERATURE: AlertType.TEMPERATURE,
     MonitoredMetric.ACTIVITY_INDEX: AlertType.ACTIVITY,
     MonitoredMetric.HEART_RATE: AlertType.HEART_RATE,
+    MonitoredMetric.METHANE_INDEX: AlertType.METHANE,
 }
 
 
@@ -112,7 +108,7 @@ class RuleEvaluator:
             return []
         violations = self._threshold_violations(reading, assignment, rules)
         violations.extend(self._geofence_violations(reading, assignment, rules))
-        violations.sort(key=lambda violation: _SEVERITY_RANK[violation.severity], reverse=True)
+        violations.sort(key=lambda violation: violation.severity.urgency, reverse=True)
         return violations
 
     @staticmethod
@@ -124,7 +120,6 @@ class RuleEvaluator:
         if assignment.life_stage is None:
             return []
         life_stage = assignment.life_stage.casefold()
-        # The uncalibrated MQ-2 methane index has no rule, so it is never evaluated.
         measurements = (
             (
                 MonitoredMetric.BODY_TEMPERATURE,
@@ -138,25 +133,33 @@ class RuleEvaluator:
                 MonitoredMetric.HEART_RATE,
                 None if reading.heart_rate is None else reading.heart_rate.beats_per_minute,
             ),
+            (
+                MonitoredMetric.METHANE_INDEX,
+                None if reading.methane_index is None else reading.methane_index.value,
+            ),
         )
         violations: list[RuleViolation] = []
         for metric, value in measurements:
             if value is None:
                 continue
-            for threshold in rules.thresholds:
-                if threshold.metric is not metric:
-                    continue
-                if threshold.life_stage.casefold() != life_stage:
-                    continue
-                if value < threshold.min_value or value > threshold.max_value:
-                    violations.append(
-                        RuleViolation(
-                            _METRIC_ALERT_TYPES[metric],
-                            threshold.severity,
-                            threshold.min_value,
-                            threshold.max_value,
-                        )
+            breached = [
+                threshold
+                for threshold in rules.thresholds
+                if threshold.metric is metric
+                and threshold.life_stage.casefold() == life_stage
+                and (value < threshold.min_value or value > threshold.max_value)
+            ]
+            if breached:
+                # The Warning and Critical rules of a metric share one alert, and the worst one wins.
+                worst = max(breached, key=lambda threshold: threshold.severity.urgency)
+                violations.append(
+                    RuleViolation(
+                        _METRIC_ALERT_TYPES[metric],
+                        worst.severity,
+                        worst.min_value,
+                        worst.max_value,
                     )
+                )
         return violations
 
     @staticmethod

@@ -352,6 +352,16 @@ class MonitoringAlertTestCase(unittest.TestCase):
                 DEVICE_ID, AlertType.HEART_RATE, AlertSeverity.WARNING, (self.reading_id,), 3, NOW
             )
 
+    def test_methane_alert_is_a_threshold_alert(self):
+        alert = MonitoringAlert.raise_for(
+            DEVICE_ID, AlertType.METHANE, AlertSeverity.CRITICAL, (self.reading_id,), 3, NOW, 0.0, 80.0
+        )
+        self.assertEqual(alert.threshold_max_value, 80.0)
+        with self.assertRaises(ValueError):
+            MonitoringAlert.raise_for(
+                DEVICE_ID, AlertType.METHANE, AlertSeverity.CRITICAL, (self.reading_id,), 3, NOW
+            )
+
     def test_geofence_alert_requires_geofence_and_distance_only(self):
         alert = MonitoringAlert.raise_for(
             DEVICE_ID,
