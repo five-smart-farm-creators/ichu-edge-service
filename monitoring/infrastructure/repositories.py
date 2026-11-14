@@ -19,7 +19,9 @@ from monitoring.domain.value_objects import (
     DeviceAssignment,
     Geofence,
     GeoPosition,
+    HeartRate,
     InvalidMeasurementReasons,
+    MethaneIndex,
     MonitoredMetric,
     RecordedAt,
     SyncStatus,
@@ -65,6 +67,14 @@ class TelemetryReadingRepository:
             if "invalid_reasons" not in columns:
                 database.execute_sql(
                     'ALTER TABLE "telemetry_readings" ADD COLUMN "invalid_reasons" TEXT NULL'
+                )
+            if "heart_rate" not in columns:
+                database.execute_sql(
+                    'ALTER TABLE "telemetry_readings" ADD COLUMN "heart_rate" REAL NULL'
+                )
+            if "methane_index" not in columns:
+                database.execute_sql(
+                    'ALTER TABLE "telemetry_readings" ADD COLUMN "methane_index" REAL NULL'
                 )
 
     def save_idempotently(self, reading: TelemetryReading) -> ReadingSaveResult:
@@ -142,6 +152,8 @@ class TelemetryReadingRepository:
             "longitude": None if position is None else position.longitude,
             "accuracy_meters": None if position is None else position.accuracy_meters,
             "invalid_reasons": json.dumps(invalid_reasons.as_dict()) if invalid_reasons else None,
+            "heart_rate": None if reading.heart_rate is None else reading.heart_rate.beats_per_minute,
+            "methane_index": None if reading.methane_index is None else reading.methane_index.value,
             "sync_status": reading.sync_status.value,
             "rejection_reason": reading.rejection_reason,
             "sync_attempts": reading.sync_attempts,
@@ -166,6 +178,8 @@ class TelemetryReadingRepository:
             None if row.battery_level is None else BatteryLevel(row.battery_level),
             position,
             invalid_reasons,
+            None if row.heart_rate is None else HeartRate(row.heart_rate),
+            None if row.methane_index is None else MethaneIndex(row.methane_index),
             SyncStatus(row.sync_status),
             row.rejection_reason,
             row.sync_attempts,

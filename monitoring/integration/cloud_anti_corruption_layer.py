@@ -1,5 +1,6 @@
 """DDD anti-corruption layer for the Monitoring-to-ICHU-cloud relationship."""
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -17,6 +18,8 @@ from monitoring.domain.value_objects import (
     Threshold,
 )
 from monitoring.infrastructure.cloud_client import IchuCloudClient
+
+logger = logging.getLogger(__name__)
 
 
 class IchuCloudAntiCorruptionLayer:
@@ -102,6 +105,14 @@ def _reading_to_contract(reading: TelemetryReading) -> dict[str, Any]:
             None if reading.battery_level is None else reading.battery_level.percent,
             reasons.reason_for("battery_level"),
         ),
+        "heartRate": _measurement_to_contract(
+            None if reading.heart_rate is None else reading.heart_rate.beats_per_minute,
+            reasons.reason_for("heart_rate"),
+        ),
+        "methaneIndex": _measurement_to_contract(
+            None if reading.methane_index is None else reading.methane_index.value,
+            reasons.reason_for("methane_index"),
+        ),
         "position": _position_to_contract(reading.position, reasons.reason_for("position")),
     }
 
@@ -185,19 +196,31 @@ def _assignments_from_contract(payload: dict[str, Any]) -> list[DeviceAssignment
 
 def _rule_set_from_contract(payload: dict[str, Any]) -> MonitoringRuleSet:
     ranch_id = payload.get("ranchId")
+    thresholds = tuple(
+        threshold
+        for threshold in map(_threshold_from_contract, payload["thresholds"])
+        if threshold is not None
+    )
     return MonitoringRuleSet(
         None if ranch_id is None else uuid.UUID(ranch_id),
         int(payload["revision"]),
-        tuple(_threshold_from_contract(item) for item in payload["thresholds"]),
+        thresholds,
         tuple(_geofence_from_contract(item) for item in payload["geofences"]),
     )
 
 
-def _threshold_from_contract(item: dict[str, Any]) -> Threshold:
+def _threshold_from_contract(item: dict[str, Any]) -> Threshold | None:
+    """Return the threshold, or ``None`` for a metric this edge does not monitor yet."""
+    try:
+        metric = MonitoredMetric(item["metric"])
+    except ValueError:
+        # A newer cloud may add metrics; skipping keeps the rest of the rules usable.
+        logger.warning("Skipping threshold for unknown metric %r", item["metric"])
+        return None
     return Threshold(
         uuid.UUID(item["thresholdId"]),
         item["lifeStage"],
-        MonitoredMetric(item["metric"]),
+        metric,
         float(item["minValue"]),
         float(item["maxValue"]),
         AlertSeverity(item["severity"]),

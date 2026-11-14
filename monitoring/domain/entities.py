@@ -13,7 +13,9 @@ from monitoring.domain.value_objects import (
     BodyTemperature,
     Geofence,
     GeoPosition,
+    HeartRate,
     InvalidMeasurementReasons,
+    MethaneIndex,
     RecordedAt,
     SyncStatus,
     TelemetryEventId,
@@ -63,6 +65,8 @@ class TelemetryReading:
     battery_level: BatteryLevel | None = None
     position: GeoPosition | None = None
     invalid_reasons: InvalidMeasurementReasons = InvalidMeasurementReasons()
+    heart_rate: HeartRate | None = None
+    methane_index: MethaneIndex | None = None
     sync_status: SyncStatus = SyncStatus.PENDING
     rejection_reason: str | None = None
     sync_attempts: int = 0
@@ -94,11 +98,17 @@ class TelemetryReading:
             raise TypeError("Position must be a GeoPosition value")
         if not isinstance(self.invalid_reasons, InvalidMeasurementReasons):
             raise TypeError("Invalid reasons must be an InvalidMeasurementReasons value")
+        if self.heart_rate is not None and not isinstance(self.heart_rate, HeartRate):
+            raise TypeError("Heart rate must be a HeartRate value")
+        if self.methane_index is not None and not isinstance(self.methane_index, MethaneIndex):
+            raise TypeError("Methane index must be a MethaneIndex value")
         measurements = {
             "body_temperature": self.body_temperature,
             "activity_index": self.activity_index,
             "battery_level": self.battery_level,
             "position": self.position,
+            "heart_rate": self.heart_rate,
+            "methane_index": self.methane_index,
         }
         if any(measurements[field] is not None for field in self.invalid_reasons.fields()):
             raise ValueError("A measurement cannot be both captured and invalid")
@@ -122,6 +132,8 @@ class TelemetryReading:
         battery_level: float | None,
         position: GeoPosition | None,
         invalid_reasons: Mapping[str, str] | None = None,
+        heart_rate: float | None = None,
+        methane_index: float | None = None,
     ) -> "TelemetryReading":
         """Create a new pending reading, enforcing domain invariants."""
         return cls(
@@ -135,6 +147,8 @@ class TelemetryReading:
             None if battery_level is None else BatteryLevel(battery_level),
             position,
             InvalidMeasurementReasons(invalid_reasons),
+            None if heart_rate is None else HeartRate(heart_rate),
+            None if methane_index is None else MethaneIndex(methane_index),
         )
 
     @classmethod
@@ -150,6 +164,8 @@ class TelemetryReading:
         battery_level: BatteryLevel | None,
         position: GeoPosition | None,
         invalid_reasons: InvalidMeasurementReasons,
+        heart_rate: HeartRate | None,
+        methane_index: MethaneIndex | None,
         sync_status: SyncStatus,
         rejection_reason: str | None,
         sync_attempts: int,
@@ -166,6 +182,8 @@ class TelemetryReading:
             battery_level,
             position,
             invalid_reasons,
+            heart_rate,
+            methane_index,
             sync_status,
             rejection_reason,
             sync_attempts,
@@ -210,12 +228,16 @@ class TelemetryReading:
             self.battery_level,
             self.position,
             self.invalid_reasons,
+            self.heart_rate,
+            self.methane_index,
         ) == (
             other.body_temperature,
             other.activity_index,
             other.battery_level,
             other.position,
             other.invalid_reasons,
+            other.heart_rate,
+            other.methane_index,
         )
 
 
@@ -269,7 +291,7 @@ class MonitoringAlert:
 
     def _check_type_specific_fields(self) -> None:
         """Enforce which threshold or geofence fields each alert type carries."""
-        if self.type in (AlertType.TEMPERATURE, AlertType.ACTIVITY):
+        if self.type in (AlertType.TEMPERATURE, AlertType.ACTIVITY, AlertType.HEART_RATE):
             if self.threshold_min_value is None or self.threshold_max_value is None:
                 raise ValueError("Threshold alerts require threshold minimum and maximum")
             if self.threshold_min_value >= self.threshold_max_value:

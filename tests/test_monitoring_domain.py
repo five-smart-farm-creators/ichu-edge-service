@@ -14,7 +14,9 @@ from monitoring.domain.value_objects import (
     DeviceAssignment,
     Geofence,
     GeoPosition,
+    HeartRate,
     InvalidMeasurementReasons,
+    MethaneIndex,
     MonitoredMetric,
     RecordedAt,
     SyncStatus,
@@ -35,6 +37,10 @@ class MeasurementValueObjectTestCase(unittest.TestCase):
         self.assertEqual(ActivityIndex(100).value, 100.0)
         self.assertEqual(BatteryLevel(0).percent, 0.0)
         self.assertEqual(BatteryLevel(100).percent, 100.0)
+        self.assertEqual(HeartRate(30).beats_per_minute, 30.0)
+        self.assertEqual(HeartRate(200).beats_per_minute, 200.0)
+        self.assertEqual(MethaneIndex(0).value, 0.0)
+        self.assertEqual(MethaneIndex(100).value, 100.0)
 
     def test_measurements_reject_out_of_range_non_finite_and_non_numeric_values(self):
         cases = (
@@ -48,6 +54,10 @@ class MeasurementValueObjectTestCase(unittest.TestCase):
             (ActivityIndex, 100.1),
             (BatteryLevel, -1),
             (BatteryLevel, 101),
+            (HeartRate, 29.9),
+            (HeartRate, 200.1),
+            (MethaneIndex, -0.1),
+            (MethaneIndex, 100.1),
         )
         for factory, value in cases:
             with self.subTest(factory=factory.__name__, value=value):
@@ -86,7 +96,7 @@ class InvalidMeasurementReasonsTestCase(unittest.TestCase):
 
     def test_rejects_unknown_fields_and_blank_non_text_or_overlong_reasons(self):
         cases = (
-            {"heart_rate": "Sensor did not respond"},
+            {"blood_pressure": "Sensor did not respond"},
             {"body_temperature": 42},
             {"body_temperature": "   "},
             {"body_temperature": "x" * 201},
@@ -99,6 +109,12 @@ class InvalidMeasurementReasonsTestCase(unittest.TestCase):
     def test_reason_of_exactly_200_characters_is_accepted(self):
         reason = "x" * 200
         self.assertEqual(InvalidMeasurementReasons({"position": reason}).reason_for("position"), reason)
+
+    def test_pulse_and_methane_index_accept_reasons(self):
+        reasons = InvalidMeasurementReasons(
+            {"heart_rate": "Pulse sensor without contact", "methane_index": "Gas sensor warming up"}
+        )
+        self.assertEqual(reasons.fields(), frozenset({"heart_rate", "methane_index"}))
 
     def test_equality_and_order_ignore_insertion_order(self):
         first = InvalidMeasurementReasons(
@@ -245,6 +261,59 @@ class TelemetryReadingTestCase(unittest.TestCase):
         self.assertTrue(original.same_telemetry_as(retry))
         self.assertFalse(original.same_telemetry_as(other_reason))
 
+    def test_pulse_and_methane_index_are_optional_value_objects(self):
+        reading = TelemetryReading.record(
+            self.device, "event-10", None, None, None, None, None, heart_rate=72.0, methane_index=18.5
+        )
+        bare = TelemetryReading.record(self.device, "event-11", None, 38.5, None, None, None)
+
+        self.assertEqual(reading.heart_rate, HeartRate(72.0))
+        self.assertEqual(reading.methane_index, MethaneIndex(18.5))
+        self.assertIsNone(bare.heart_rate)
+        self.assertIsNone(bare.methane_index)
+
+    def test_reading_with_only_a_pulse_or_a_methane_index_is_valid(self):
+        pulse_only = TelemetryReading.record(
+            self.device, "event-12", None, None, None, None, None, heart_rate=72.0
+        )
+        methane_only = TelemetryReading.record(
+            self.device, "event-13", None, None, None, None, None, methane_index=18.5
+        )
+
+        self.assertEqual(pulse_only.heart_rate, HeartRate(72.0))
+        self.assertEqual(methane_only.methane_index, MethaneIndex(18.5))
+
+    def test_pulse_cannot_carry_both_a_value_and_an_invalid_reason(self):
+        with self.assertRaises(ValueError):
+            TelemetryReading.record(
+                self.device,
+                "event-14",
+                None,
+                None,
+                None,
+                None,
+                None,
+                {"heart_rate": "Pulse sensor without contact"},
+                heart_rate=72.0,
+            )
+
+    def test_same_telemetry_compares_pulse_and_methane_index(self):
+        original = TelemetryReading.record(
+            self.device, "event-15", NOW, None, None, None, None, heart_rate=72.0, methane_index=18.5
+        )
+        retry = TelemetryReading.record(
+            self.device, "event-15", NOW, None, None, None, None, heart_rate=72.0, methane_index=18.5
+        )
+        other_pulse = TelemetryReading.record(
+            self.device, "event-15", NOW, None, None, None, None, heart_rate=80.0, methane_index=18.5
+        )
+        other_methane = TelemetryReading.record(
+            self.device, "event-15", NOW, None, None, None, None, heart_rate=72.0, methane_index=20.0
+        )
+        self.assertTrue(original.same_telemetry_as(retry))
+        self.assertFalse(original.same_telemetry_as(other_pulse))
+        self.assertFalse(original.same_telemetry_as(other_methane))
+
 
 class MonitoringAlertTestCase(unittest.TestCase):
     def setUp(self):
@@ -271,6 +340,16 @@ class MonitoringAlertTestCase(unittest.TestCase):
                 39.5,
                 geofence_id=uuid.uuid4(),
                 distance_to_boundary_meters=10.0,
+            )
+
+    def test_heart_rate_alert_is_a_threshold_alert(self):
+        alert = MonitoringAlert.raise_for(
+            DEVICE_ID, AlertType.HEART_RATE, AlertSeverity.WARNING, (self.reading_id,), 3, NOW, 48.0, 84.0
+        )
+        self.assertEqual(alert.threshold_max_value, 84.0)
+        with self.assertRaises(ValueError):
+            MonitoringAlert.raise_for(
+                DEVICE_ID, AlertType.HEART_RATE, AlertSeverity.WARNING, (self.reading_id,), 3, NOW
             )
 
     def test_geofence_alert_requires_geofence_and_distance_only(self):
