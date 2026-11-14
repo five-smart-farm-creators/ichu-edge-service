@@ -23,6 +23,7 @@ _SEVERITY_RANK = {
 _METRIC_ALERT_TYPES = {
     MonitoredMetric.BODY_TEMPERATURE: AlertType.TEMPERATURE,
     MonitoredMetric.ACTIVITY_INDEX: AlertType.ACTIVITY,
+    MonitoredMetric.HEART_RATE: AlertType.HEART_RATE,
 }
 
 
@@ -123,6 +124,7 @@ class RuleEvaluator:
         if assignment.life_stage is None:
             return []
         life_stage = assignment.life_stage.casefold()
+        # The uncalibrated MQ-2 methane index has no rule, so it is never evaluated.
         measurements = (
             (
                 MonitoredMetric.BODY_TEMPERATURE,
@@ -131,6 +133,10 @@ class RuleEvaluator:
             (
                 MonitoredMetric.ACTIVITY_INDEX,
                 None if reading.activity_index is None else reading.activity_index.value,
+            ),
+            (
+                MonitoredMetric.HEART_RATE,
+                None if reading.heart_rate is None else reading.heart_rate.beats_per_minute,
             ),
         )
         violations: list[RuleViolation] = []

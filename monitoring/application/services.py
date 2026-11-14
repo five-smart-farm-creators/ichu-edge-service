@@ -154,6 +154,8 @@ class TelemetryIngestionService:
         battery_level: float | None,
         position: GeoPosition | None,
         invalid_reasons: Mapping[str, str] | None = None,
+        heart_rate: float | None = None,
+        methane_index: float | None = None,
     ) -> IngestionResult:
         """Accept one telemetry submission and raise local alerts; retries return the stored reading."""
         submitting_device = self._iam.authenticated_submitting_device(device_id, api_key)
@@ -168,6 +170,8 @@ class TelemetryIngestionService:
             battery_level,
             position,
             invalid_reasons,
+            heart_rate,
+            methane_index,
         )
         saved = self._readings.save_idempotently(reading)
         if not saved.created:

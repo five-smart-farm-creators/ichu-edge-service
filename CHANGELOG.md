@@ -28,6 +28,12 @@ individually.
   Existing databases gain the column when the service starts.
 - Collar simulator, `scripts/simulate_collar.py`, which sends the firmware telemetry JSON with its
   retry rules to the edge, for tests without hardware.
+- `heart_rate` (30 to 200 bpm) and `methane_index` (0 to 100, an uncalibrated MQ-2 index, not ppm) in
+  telemetry readings. Both are optional, echoed in the response, and sent to the cloud as `heartRate`
+  and `methaneIndex`. A `HeartRate` threshold raises a `HeartRate` alert; the methane index has no
+  rule. Existing databases gain the columns when the service starts.
+- Collar simulator `tachycardia` mode; every simulated reading now includes a `methane_index` and
+  either a `heart_rate` or the reason its pulse sensor failed.
 
 ### Changed
 
@@ -43,6 +49,8 @@ individually.
 - Development seeding registers the development devices only; their lots and life stages come from the cloud.
 - `position.accuracy_meters` is required, and a geofence is violated only when the position is farther
   outside than the tolerance plus the GPS accuracy.
+- A threshold for a metric that the edge does not know is skipped with a warning, so the other
+  rules still apply after the cloud adds a metric.
 
 ## [0.1.0] - 2026-11-07
 

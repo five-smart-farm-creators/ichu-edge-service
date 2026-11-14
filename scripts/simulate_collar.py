@@ -18,7 +18,7 @@ import requests
 READINGS_PATH = "/api/v1/monitoring/telemetry-readings"
 DEFAULT_EDGE_URL = "http://127.0.0.1:5000"
 DEFAULT_DEVICE_ID = "9d4a5f3b-3a6e-4f84-8daa-4e5f6a7b8c93"
-MODES = ("normal", "fever", "escape", "sensor-failure")
+MODES = ("normal", "fever", "escape", "sensor-failure", "tachycardia")
 REQUEST_TIMEOUT_SECONDS = 10
 SEND_ATTEMPTS = 3
 
@@ -62,6 +62,15 @@ def build_reading(mode, device_id, event_id, sequence, rng, now):
         "longitude": round(longitude + rng.uniform(-jitter, jitter), 6),
         "accuracy_meters": round(rng.uniform(3.0, 8.0), 2),
     }
+    # Uncalibrated MQ-2 index, not ppm; drawn last so the seeded values above do not change.
+    reading["methane_index"] = round(rng.uniform(10.0, 30.0), 2)
+    if mode == "sensor-failure":
+        reading["invalid_reasons"]["heart_rate"] = "Pulse sensor without contact"
+    elif mode == "tachycardia":
+        # Above the 84 bpm maximum of the development rule, so the edge raises a Warning alert.
+        reading["heart_rate"] = round(rng.uniform(110.0, 130.0), 2)
+    else:
+        reading["heart_rate"] = round(rng.uniform(55.0, 75.0), 2)
     return reading
 
 

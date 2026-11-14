@@ -20,6 +20,8 @@ class TelemetryReadingModel(Model):
     longitude = FloatField(null=True)
     accuracy_meters = FloatField(null=True)
     invalid_reasons = TextField(null=True)
+    heart_rate = FloatField(null=True)
+    methane_index = FloatField(null=True)
     sync_status = CharField(max_length=16)
     rejection_reason = TextField(null=True)
     sync_attempts = IntegerField(default=0)

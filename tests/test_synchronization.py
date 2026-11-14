@@ -27,6 +27,8 @@ from monitoring.domain.value_objects import (
     AlertType,
     DeviceAssignment,
     GeoPosition,
+    HeartRate,
+    MethaneIndex,
     MonitoredMetric,
     SyncStatus,
     Threshold,
@@ -500,6 +502,75 @@ class ReadingContractTranslationTestCase(unittest.TestCase):
             {"latitude": -16.5, "longitude": -68.1, "accuracyMeters": 4.0, "invalidReason": None},
         )
 
+    def test_captured_pulse_and_methane_index_are_sent_with_their_values(self):
+        reading = TelemetryReading.record(
+            SubmittingDevice(DEVICE_ID),
+            "event-contract-3",
+            NOW,
+            38.5,
+            None,
+            None,
+            None,
+            heart_rate=72.0,
+            methane_index=18.5,
+        )
+
+        contract = self.contract_of(reading)
+
+        self.assertEqual(contract["heartRate"], {"value": 72.0, "invalidReason": None})
+        self.assertEqual(contract["methaneIndex"], {"value": 18.5, "invalidReason": None})
+
+    def test_failed_pulse_and_gas_sensors_are_sent_with_their_reasons_and_no_value(self):
+        reading = TelemetryReading.record(
+            SubmittingDevice(DEVICE_ID),
+            "event-contract-4",
+            NOW,
+            38.5,
+            None,
+            None,
+            None,
+            {"heart_rate": "Pulse sensor without contact", "methane_index": "Gas sensor warming up"},
+        )
+
+        contract = self.contract_of(reading)
+
+        self.assertEqual(
+            contract["heartRate"], {"value": None, "invalidReason": "Pulse sensor without contact"}
+        )
+        self.assertEqual(
+            contract["methaneIndex"], {"value": None, "invalidReason": "Gas sensor warming up"}
+        )
+
+
+def cloud_threshold(metric):
+    return {
+        "thresholdId": str(uuid.uuid4()),
+        "lifeStage": "MilkingCow",
+        "metric": metric,
+        "minValue": 48.0,
+        "maxValue": 84.0,
+        "severity": "Warning",
+    }
+
+
+class CloudRulesTranslationTestCase(unittest.TestCase):
+    def test_threshold_for_an_unknown_metric_is_skipped_and_the_rest_are_kept(self):
+        payload = {
+            "ranchId": RANCH_ID,
+            "revision": 5,
+            "thresholds": [cloud_threshold("HeartRate"), cloud_threshold("Hydration")],
+            "geofences": [],
+        }
+        client = make_client(FakeSession(response=FakeResponse(200, payload)))
+
+        with self.assertLogs("monitoring.integration.cloud_anti_corruption_layer", level="WARNING") as logs:
+            rules = IchuCloudAntiCorruptionLayer(client).fetch_rules(0)
+
+        self.assertEqual(rules.revision, 5)
+        self.assertEqual([threshold.metric for threshold in rules.thresholds], [MonitoredMetric.HEART_RATE])
+        self.assertEqual((rules.thresholds[0].min_value, rules.thresholds[0].max_value), (48.0, 84.0))
+        self.assertIn("Hydration", logs.output[0])
+
 
 class SynchronizationCredentialsTestCase(unittest.TestCase):
     @classmethod
@@ -648,6 +719,27 @@ class LegacySchemaMigrationTestCase(unittest.TestCase):
         self.assertIn("invalid_reasons", reading_columns)
         self.assertEqual([reading.invalid_reasons.as_dict() for reading in pending], [{}])
 
+    def test_databases_created_before_pulse_and_methane_index_load_them_as_absent(self):
+        with tempfile.TemporaryDirectory(prefix="ichu-edge-migration-", ignore_cleanup_errors=True) as directory:
+            configure_database(os.path.join(directory, "v030.db"))
+            try:
+                db.execute_sql(LEGACY_READINGS_TABLE)
+                db.execute_sql(
+                    "INSERT INTO telemetry_readings (reading_id, device_id, event_id, recorded_at, "
+                    "timestamp_supplied, body_temperature, sync_status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (str(uuid.uuid4()), DEVICE_ID, "legacy-event-3", "2026-11-07 12:00:00", 1, 38.5, "pending"),
+                )
+
+                TelemetryReadingRepository().migrate_schema()
+                reading_columns = {column.name for column in db.get_columns("telemetry_readings")}
+                pending = TelemetryReadingRepository().find_pending(10)
+            finally:
+                db.close()
+
+        self.assertIn("heart_rate", reading_columns)
+        self.assertIn("methane_index", reading_columns)
+        self.assertEqual([(reading.heart_rate, reading.methane_index) for reading in pending], [(None, None)])
+
 
 class TelemetryReadingRepositoryTestCase(unittest.TestCase):
     @classmethod
@@ -703,6 +795,41 @@ class TelemetryReadingRepositoryTestCase(unittest.TestCase):
         ).fetchone()[0]
 
         self.assertIsNone(raw)
+
+    def test_pulse_and_methane_index_survive_a_round_trip(self):
+        repository = TelemetryReadingRepository()
+        reading = TelemetryReading.record(
+            SubmittingDevice(DEVICE_ID),
+            "event-stored-pulse-1",
+            NOW,
+            38.5,
+            None,
+            None,
+            None,
+            heart_rate=72.0,
+            methane_index=18.5,
+        )
+        repository.save_idempotently(reading)
+
+        stored = next(
+            item for item in repository.find_pending(100) if item.reading_id == reading.reading_id
+        )
+
+        self.assertEqual(stored.heart_rate, HeartRate(72.0))
+        self.assertEqual(stored.methane_index, MethaneIndex(18.5))
+
+    def test_absent_pulse_and_methane_index_store_null(self):
+        reading = TelemetryReading.record(
+            SubmittingDevice(DEVICE_ID), "event-stored-pulse-2", NOW, 38.5, None, None, None
+        )
+        TelemetryReadingRepository().save_idempotently(reading)
+
+        raw = db.execute_sql(
+            "SELECT heart_rate, methane_index FROM telemetry_readings WHERE event_id = ?",
+            ("event-stored-pulse-2",),
+        ).fetchone()
+
+        self.assertEqual(raw, (None, None))
 
 
 class DeviceAssignmentRepositoryTestCase(unittest.TestCase):

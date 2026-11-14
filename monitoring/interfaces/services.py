@@ -48,6 +48,10 @@ class TelemetryReadingCreateRequest(BaseModel):
     invalid_reasons: dict[str, str] | None = Field(
         None, description="Reasons for failed measurements, keyed by field name."
     )
+    heart_rate: float | None = Field(None, description="Pulse rate in beats per minute.")
+    methane_index: float | None = Field(
+        None, description="Relative methane index from an uncalibrated sensor, not ppm."
+    )
 
 
 def _iso_utc(value: datetime) -> str:
@@ -67,6 +71,8 @@ def _reading_payload(reading: TelemetryReading) -> dict[str, Any]:
         else reading.body_temperature.celsius,
         "activity_index": None if reading.activity_index is None else reading.activity_index.value,
         "battery_level": None if reading.battery_level is None else reading.battery_level.percent,
+        "heart_rate": None if reading.heart_rate is None else reading.heart_rate.beats_per_minute,
+        "methane_index": None if reading.methane_index is None else reading.methane_index.value,
         "position": None
         if position is None
         else {
@@ -135,6 +141,8 @@ def create_telemetry_reading():
             reading_request.battery_level,
             position,
             reading_request.invalid_reasons,
+            reading_request.heart_rate,
+            reading_request.methane_index,
         )
     except DeviceAuthenticationFailed:
         return jsonify({"error": "Invalid device_id or API key"}), 401

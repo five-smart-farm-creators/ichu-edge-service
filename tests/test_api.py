@@ -136,6 +136,8 @@ class TelemetryApiTestCase(ApiTestCase):
         self.assertEqual(response.json["reading"]["event_id"], "event-create-1")
         self.assertEqual(response.json["reading"]["recorded_at"], "2026-11-07T15:00:00Z")
         self.assertEqual(response.json["reading"]["invalid_reasons"], {})
+        self.assertIsNone(response.json["reading"]["heart_rate"])
+        self.assertIsNone(response.json["reading"]["methane_index"])
         self.assertEqual(response.json["reading"]["sync_status"], "pending")
         self.assertEqual(response.json["alerts"], [])
 
@@ -260,7 +262,7 @@ class TelemetryApiTestCase(ApiTestCase):
 
     def test_rejects_unknown_field_and_blank_or_overlong_reason(self):
         for invalid_reasons in (
-            {"heart_rate": "Sensor did not respond"},
+            {"blood_pressure": "Sensor did not respond"},
             {"body_temperature": "   "},
             {"body_temperature": "x" * 201},
         ):
@@ -278,6 +280,47 @@ class TelemetryApiTestCase(ApiTestCase):
                 "event-invalid-both-1", invalid_reasons={"body_temperature": "Sensor did not respond"}
             )
         )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_accepts_pulse_and_methane_index_and_echoes_them(self):
+        response = self.post_reading(
+            reading_payload("event-pulse-1", heart_rate=72.0, methane_index=18.5)
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json["reading"]["heart_rate"], 72.0)
+        self.assertEqual(response.json["reading"]["methane_index"], 18.5)
+
+    def test_identical_retry_with_pulse_returns_the_original_reading(self):
+        payload = reading_payload("event-pulse-retry-1", heart_rate=72.0, methane_index=18.5)
+        first = self.post_reading(payload)
+        retry = self.post_reading(payload)
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(retry.status_code, 200)
+        self.assertEqual(retry.json["reading"]["reading_id"], first.json["reading"]["reading_id"])
+
+    def test_reusing_event_id_with_another_pulse_conflicts(self):
+        self.post_reading(reading_payload("event-pulse-conflict-1", heart_rate=72.0))
+        conflicting = self.post_reading(reading_payload("event-pulse-conflict-1", heart_rate=80.0))
+
+        self.assertEqual(conflicting.status_code, 409)
+
+    def test_rejects_pulse_and_methane_index_outside_their_ranges(self):
+        for measurements in (
+            {"heart_rate": 29.9},
+            {"heart_rate": 200.1},
+            {"methane_index": -0.1},
+            {"methane_index": 100.1},
+        ):
+            with self.subTest(measurements=measurements):
+                response = self.post_reading(reading_payload("event-gas-range-1", **measurements))
+
+                self.assertEqual(response.status_code, 400)
+
+    def test_still_rejects_unknown_top_level_fields(self):
+        response = self.post_reading(reading_payload("event-unknown-field-1", spo2=98.0))
 
         self.assertEqual(response.status_code, 400)
 

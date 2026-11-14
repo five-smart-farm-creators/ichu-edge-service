@@ -97,13 +97,26 @@ class BuildReadingTestCase(unittest.TestCase):
             with self.subTest(seed=seed):
                 self.assertFalse(inside_lot(sample_reading("escape", seed=seed)["position"]))
 
-    def test_sensor_failure_omits_temperature_and_reports_the_reason(self):
+    def test_sensor_failure_omits_temperature_and_pulse_and_reports_both_reasons(self):
         reading = sample_reading("sensor-failure")
 
         self.assertNotIn("body_temperature", reading)
+        self.assertNotIn("heart_rate", reading)
         self.assertEqual(
-            reading["invalid_reasons"], {"body_temperature": "Temperature sensor not responding"}
+            reading["invalid_reasons"],
+            {
+                "body_temperature": "Temperature sensor not responding",
+                "heart_rate": "Pulse sensor without contact",
+            },
         )
+
+    def test_tachycardia_heart_rate_is_above_the_demo_maximum(self):
+        for seed in range(10):
+            with self.subTest(seed=seed):
+                heart_rate = sample_reading("tachycardia", seed=seed)["heart_rate"]
+
+                self.assertGreaterEqual(heart_rate, 110.0)
+                self.assertLessEqual(heart_rate, 130.0)
 
     def test_every_mode_uses_utc_timestamps_and_battery_drops_with_the_sequence(self):
         for mode in MODES:
@@ -115,6 +128,24 @@ class BuildReadingTestCase(unittest.TestCase):
                 self.assertEqual(first["battery_level"], 95.0)
                 self.assertEqual(later["battery_level"], 85.0)
                 self.assertEqual(sample_reading(mode, sequence=10_000)["battery_level"], 5.0)
+
+    def test_normal_fever_and_escape_send_a_heart_rate_from_55_to_75(self):
+        for mode in ("normal", "fever", "escape"):
+            for seed in range(10):
+                with self.subTest(mode=mode, seed=seed):
+                    heart_rate = sample_reading(mode, seed=seed)["heart_rate"]
+
+                    self.assertGreaterEqual(heart_rate, 55.0)
+                    self.assertLessEqual(heart_rate, 75.0)
+
+    def test_every_mode_sends_a_methane_index_from_10_to_30(self):
+        for mode in MODES:
+            for seed in range(10):
+                with self.subTest(mode=mode, seed=seed):
+                    methane_index = sample_reading(mode, seed=seed)["methane_index"]
+
+                    self.assertGreaterEqual(methane_index, 10.0)
+                    self.assertLessEqual(methane_index, 30.0)
 
     def test_same_seed_gives_the_same_reading(self):
         first = build_reading("escape", DEVICE_ID, "sim-9d4a5f3b-1-000001", 1, random.Random(42), NOW)
@@ -256,6 +287,14 @@ class EdgeIntegrationTestCase(unittest.TestCase):
                         39.5,
                         AlertSeverity.CRITICAL,
                     ),
+                    Threshold(
+                        uuid.uuid4(),
+                        "MilkingCow",
+                        MonitoredMetric.HEART_RATE,
+                        48.0,
+                        84.0,
+                        AlertSeverity.WARNING,
+                    ),
                 ),
                 (),
             )
@@ -271,6 +310,17 @@ class EdgeIntegrationTestCase(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertRegex(output.getvalue(), r" 201 alerts=Temperature/Critical\n")
+
+    def test_tachycardia_reading_is_accepted_and_raises_a_heart_rate_warning(self):
+        session = requests.Session()
+        session.mount("http://", FlaskTransportAdapter(self.app.test_client()))
+        output = io.StringIO()
+
+        with patch.dict(os.environ, {"DEVICE_API_KEY": API_KEY}), redirect_stdout(output):
+            code = main(["--mode", "tachycardia", "--seed", "11"], session=session)
+
+        self.assertEqual(code, 0)
+        self.assertRegex(output.getvalue(), r" 201 alerts=HeartRate/Warning\n")
 
 
 if __name__ == "__main__":

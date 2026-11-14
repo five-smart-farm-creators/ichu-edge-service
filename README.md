@@ -231,8 +231,8 @@ Before the first request is served, `create_app()`:
   `monitoring_geofences`, and `device_assignments` tables when they are missing
 - migrates stored device credentials to salted PBKDF2 verifiers, adds the
   revocation column to existing device tables, adds the `sync_attempts`
-  column to existing reading and alert tables, and adds the `invalid_reasons`
-  column to existing reading tables
+  column to existing reading and alert tables, and adds the `invalid_reasons`,
+  `heart_rate`, and `methane_index` columns to existing reading tables
 - seeds the development devices only when explicitly enabled
 
 Monitoring then processes each reading in this order:
@@ -285,10 +285,17 @@ needs `requests`, which is already in `requirements.txt`.
 
 Modes (`--mode`):
 
-- `normal`: body temperature from 38.3 to 39.0 °C, inside the development lot.
-- `fever`: body temperature from 40.0 to 40.6 °C, above the 39.5 °C maximum of the development rule.
-- `escape`: a position about 2 km outside the development lot.
-- `sensor-failure`: no `body_temperature`, and `invalid_reasons` reports the failed sensor.
+- `normal`: body temperature from 38.3 to 39.0 °C and heart rate from 55 to 75 bpm, inside the
+  development lot.
+- `fever`: body temperature from 40.0 to 40.6 °C, above the 39.5 °C maximum of the development
+  rule, and heart rate from 55 to 75 bpm.
+- `escape`: a position about 2 km outside the development lot, and heart rate from 55 to 75 bpm.
+- `sensor-failure`: no `body_temperature` or `heart_rate`, and `invalid_reasons` reports both
+  failed sensors.
+- `tachycardia`: heart rate from 110 to 130 bpm, above the 84 bpm maximum of the development rule.
+
+Every mode sends a `methane_index` from 10 to 30. It is an index from an uncalibrated MQ-2 sensor,
+not a concentration in ppm.
 
 Run `python scripts/simulate_collar.py --help` for `--edge-url`, `--device-id`, `--count`,
 `--interval`, and `--seed`.
@@ -502,6 +509,8 @@ JSON
   "recorded_at": "2026-11-07T10:00:00-05:00",
   "body_temperature": 38.5,
   "activity_index": 42.0,
+  "heart_rate": 72.0,
+  "methane_index": 18.5,
   "position": {
     "latitude": -16.5,
     "longitude": -68.1,
@@ -523,11 +532,15 @@ JSON
 - `body_temperature` (`number`, optional): Celsius, from 30.0 to 45.0
 - `activity_index` (`number`, optional): from 0 to 100
 - `battery_level` (`number`, optional): percentage, from 0 to 100
+- `heart_rate` (`number`, optional): pulse in beats per minute, from 30 to 200
+- `methane_index` (`number`, optional): relative index from 0 to 100 from an uncalibrated MQ-2
+  sensor; it is not ppm
 - `position` (`object`, optional): `latitude` from -90 to 90, `longitude` from -180
   to 180, and `accuracy_meters` (required) of zero or more
 - `invalid_reasons` (`object`, optional): why a measurement could not be captured, keyed by
-  `body_temperature`, `activity_index`, `battery_level`, or `position`; each reason is text of
-  1 to 200 characters after trimming. A field cannot have both a value and a reason.
+  `body_temperature`, `activity_index`, `battery_level`, `position`, `heart_rate`, or
+  `methane_index`; each reason is text of 1 to 200 characters after trimming. A field cannot
+  have both a value and a reason.
 
 At least one measurement value or invalid reason is required.
 
@@ -545,8 +558,9 @@ original reading and no alerts.
     "recorded_at": "2026-11-07T15:00:00Z",
     "body_temperature": 38.5,
     "activity_index": 42.0,
-    "battery_level": 87.0,
     "battery_level": null,
+    "heart_rate": 72.0,
+    "methane_index": 18.5,
     "position": {
       "latitude": -16.5,
       "longitude": -68.1,

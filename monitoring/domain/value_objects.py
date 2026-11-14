@@ -13,6 +13,7 @@ class MonitoredMetric(Enum):
 
     BODY_TEMPERATURE = "BodyTemperature"
     ACTIVITY_INDEX = "ActivityIndex"
+    HEART_RATE = "HeartRate"
 
 
 class AlertType(Enum):
@@ -21,6 +22,7 @@ class AlertType(Enum):
     TEMPERATURE = "Temperature"
     ACTIVITY = "Activity"
     GEOFENCE = "Geofence"
+    HEART_RATE = "HeartRate"
 
 
 class AlertSeverity(Enum):
@@ -138,6 +140,32 @@ class ActivityIndex:
 
 
 @dataclass(frozen=True)
+class HeartRate:
+    """A pulse rate in beats per minute within the pulse sensor's measuring range."""
+
+    beats_per_minute: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "beats_per_minute",
+            _bounded_number("Heart rate", self.beats_per_minute, 30.0, 200.0),
+        )
+
+
+@dataclass(frozen=True)
+class MethaneIndex:
+    """A relative methane index from 0 to 100 on the uncalibrated MQ-2 scale, never ppm."""
+
+    value: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "value", _bounded_number("Methane index", self.value, 0.0, 100.0)
+        )
+
+
+@dataclass(frozen=True)
 class BatteryLevel:
     """The collar battery charge as a percentage."""
 
@@ -189,7 +217,9 @@ class GeoPosition:
         return Coordinate(self.latitude, self.longitude)
 
 
-MEASUREMENT_FIELDS = frozenset({"body_temperature", "activity_index", "battery_level", "position"})
+MEASUREMENT_FIELDS = frozenset(
+    {"body_temperature", "activity_index", "battery_level", "position", "heart_rate", "methane_index"}
+)
 _MAX_REASON_LENGTH = 200
 
 

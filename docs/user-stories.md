@@ -25,6 +25,7 @@ match the bounded contexts IAM and Monitoring.
 | TS-EDGE-007 | Bootstrap Storage and Configuration | Application bootstrap; shared infrastructure | `app.py`: `create_app`, `seed_development_data`; `config.py`: `load_config`; `shared/infrastructure/database.py`: `configure_database`, `init_db` |
 | TS-EDGE-008 | Refresh Collar Assignments from the Cloud | Monitoring; IAM | `monitoring/integration/cloud_anti_corruption_layer.py`: `IchuCloudAntiCorruptionLayer.fetch_assignments`; `monitoring/application/services.py`: `SynchronizationService.refresh_assignments`; `monitoring/infrastructure/repositories.py`: `DeviceAssignmentRepository.replace_all`; `iam/interfaces/commands.py`: `register_device_command` |
 | TS-EDGE-009 | Report Sensor Failures and GPS Accuracy | Monitoring | `monitoring/interfaces/services.py`: `PositionRequest`, `TelemetryReadingCreateRequest`; `monitoring/domain/value_objects.py`: `InvalidMeasurementReasons`; `monitoring/domain/entities.py`: `TelemetryReading.record`; `monitoring/domain/services.py`: `RuleEvaluator._geofence_violations`; `monitoring/integration/cloud_anti_corruption_layer.py`: `_reading_to_contract` |
+| TS-EDGE-010 | Report Heart Rate and Methane Index | Monitoring | `monitoring/domain/value_objects.py`: `HeartRate`, `MethaneIndex`; `monitoring/domain/services.py`: `RuleEvaluator._threshold_violations`; `monitoring/domain/entities.py`: `TelemetryReading.record`; `monitoring/integration/cloud_anti_corruption_layer.py`: `_reading_to_contract`, `_threshold_from_contract` |
 
 ---
 
@@ -351,3 +352,35 @@ Acceptance criteria:
   - Given the same geofence
   - When the device reports a position 40 m outside the polygon with an accuracy of 5 m
   - Then a `Geofence` alert is raised
+
+---
+
+### TS-EDGE-010 — Report Heart Rate and Methane Index
+
+As a ranch operator, I want a collar to report its pulse and its methane index so that a fast heart
+rate raises an alert, a failed pulse sensor is not mistaken for a normal rate, and the methane index
+is never read as a calibrated concentration.
+
+Acceptance criteria:
+
+- Scenario: Heart rate above the threshold
+  - Given a device assigned to a life stage with a heart rate threshold of 48 to 84 bpm
+  - When the device submits a reading with a heart rate of 120 bpm
+  - Then the response is `201 Created` and a `HeartRate` alert is raised with the threshold severity
+
+- Scenario: Failed pulse sensor
+  - Given a collar submits a reading with an `invalid_reasons` entry for `heart_rate` and no heart rate
+  - When the gateway validates the reading
+  - Then the response is `201 Created` and no `HeartRate` alert is raised
+  - And the next synchronization sends the heart rate with a `null` value and the `invalidReason`
+
+- Scenario: Methane index without a rule
+  - Given a collar submits a methane index of 95 and a heart rate inside its threshold
+  - When the gateway evaluates the reading
+  - Then the methane index is stored and synchronized
+  - And no alert is raised
+
+- Scenario: Heart rate outside the physiological range
+  - Given a collar submits a heart rate of 250
+  - When the gateway validates the reading
+  - Then the response is `400 Bad Request`

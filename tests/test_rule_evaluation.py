@@ -26,6 +26,9 @@ HALF_SIDE_DEGREES = 0.0005
 MILKING_COW_TEMPERATURE = Threshold(
     uuid.uuid4(), "MilkingCow", MonitoredMetric.BODY_TEMPERATURE, 37.5, 39.5, AlertSeverity.WARNING
 )
+MILKING_COW_HEART_RATE = Threshold(
+    uuid.uuid4(), "MilkingCow", MonitoredMetric.HEART_RATE, 48.0, 84.0, AlertSeverity.WARNING
+)
 
 
 def square_around(latitude, longitude, half_side):
@@ -41,7 +44,7 @@ def longitude_degrees_for_meters(meters, latitude):
     return meters / (EARTH_RADIUS_METERS * cos(radians(latitude)) * pi / 180.0)
 
 
-def reading(temperature=None, activity=None, position=None):
+def reading(temperature=None, activity=None, position=None, heart_rate=None, methane_index=None):
     return TelemetryReading.record(
         SubmittingDevice(DEVICE_ID),
         "event-1",
@@ -50,6 +53,8 @@ def reading(temperature=None, activity=None, position=None):
         activity,
         None,
         position,
+        heart_rate=heart_rate,
+        methane_index=methane_index,
     )
 
 
@@ -94,6 +99,33 @@ class ThresholdEvaluationTestCase(unittest.TestCase):
         )
         self.assertEqual(len(violations), 1)
         self.assertEqual(violations[0].type, AlertType.ACTIVITY)
+
+
+class HeartRateEvaluationTestCase(unittest.TestCase):
+    def setUp(self):
+        self.evaluator = RuleEvaluator()
+        self.milking_cow = DeviceAssignment(DEVICE_ID, None, "MilkingCow")
+        self.rules = rules(thresholds=(MILKING_COW_HEART_RATE,))
+
+    def test_heart_rate_above_threshold_raises_a_heart_rate_violation(self):
+        violations = self.evaluator.evaluate(reading(heart_rate=120.0), self.milking_cow, self.rules)
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].type, AlertType.HEART_RATE)
+        self.assertEqual(violations[0].severity, AlertSeverity.WARNING)
+        self.assertEqual(violations[0].threshold_min_value, 48.0)
+        self.assertEqual(violations[0].threshold_max_value, 84.0)
+
+    def test_heart_rate_inside_threshold_raises_nothing(self):
+        self.assertEqual(self.evaluator.evaluate(reading(heart_rate=70.0), self.milking_cow, self.rules), [])
+
+    def test_reading_without_heart_rate_raises_no_heart_rate_violation(self):
+        self.assertEqual(self.evaluator.evaluate(reading(temperature=38.5), self.milking_cow, self.rules), [])
+
+    def test_methane_index_never_raises_a_violation(self):
+        violations = self.evaluator.evaluate(
+            reading(heart_rate=70.0, methane_index=100.0), self.milking_cow, self.rules
+        )
+        self.assertEqual(violations, [])
 
 
 class GeofenceEvaluationTestCase(unittest.TestCase):
