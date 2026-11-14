@@ -558,7 +558,11 @@ class CloudRulesTranslationTestCase(unittest.TestCase):
         payload = {
             "ranchId": RANCH_ID,
             "revision": 5,
-            "thresholds": [cloud_threshold("HeartRate"), cloud_threshold("Hydration")],
+            "thresholds": [
+                cloud_threshold("HeartRate"),
+                cloud_threshold("Hydration"),
+                cloud_threshold("MethaneIndex"),
+            ],
             "geofences": [],
         }
         client = make_client(FakeSession(response=FakeResponse(200, payload)))
@@ -567,7 +571,10 @@ class CloudRulesTranslationTestCase(unittest.TestCase):
             rules = IchuCloudAntiCorruptionLayer(client).fetch_rules(0)
 
         self.assertEqual(rules.revision, 5)
-        self.assertEqual([threshold.metric for threshold in rules.thresholds], [MonitoredMetric.HEART_RATE])
+        self.assertEqual(
+            [threshold.metric for threshold in rules.thresholds],
+            [MonitoredMetric.HEART_RATE, MonitoredMetric.METHANE_INDEX],
+        )
         self.assertEqual((rules.thresholds[0].min_value, rules.thresholds[0].max_value), (48.0, 84.0))
         self.assertIn("Hydration", logs.output[0])
 

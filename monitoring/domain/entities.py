@@ -291,7 +291,7 @@ class MonitoringAlert:
 
     def _check_type_specific_fields(self) -> None:
         """Enforce which threshold or geofence fields each alert type carries."""
-        if self.type in (AlertType.TEMPERATURE, AlertType.ACTIVITY, AlertType.HEART_RATE):
+        if self.type in (AlertType.TEMPERATURE, AlertType.ACTIVITY, AlertType.HEART_RATE, AlertType.METHANE):
             if self.threshold_min_value is None or self.threshold_max_value is None:
                 raise ValueError("Threshold alerts require threshold minimum and maximum")
             if self.threshold_min_value >= self.threshold_max_value:

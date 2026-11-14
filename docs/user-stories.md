@@ -158,9 +158,21 @@ Acceptance criteria:
 - Scenario: Second violation inside the window
   - Given a `Temperature` alert was raised for device `D` within the last
     `ALERT_DEDUPLICATION_MINUTES` minutes
-  - When device `D` submits another temperature violation
+  - When device `D` submits another temperature violation of the same or lower severity
   - Then no new alert is raised
   - And the reading is still stored
+
+- Scenario: Worsening violation inside the window
+  - Given a `Warning` `Temperature` alert was raised for device `D` within the last
+    `ALERT_DEDUPLICATION_MINUTES` minutes
+  - When device `D` submits a temperature violation of `Critical` severity
+  - Then a new `Critical` `Temperature` alert is raised
+
+- Scenario: Less severe violation after a Critical alert
+  - Given a `Critical` `Temperature` alert was raised for device `D` within the last
+    `ALERT_DEDUPLICATION_MINUTES` minutes
+  - When device `D` submits a temperature violation of `Warning` severity
+  - Then no new alert is raised
 
 - Scenario: Violation after the window
   - Given the previous `Temperature` alert is older than the deduplication window
@@ -364,9 +376,10 @@ is never read as a calibrated concentration.
 Acceptance criteria:
 
 - Scenario: Heart rate above the threshold
-  - Given a device assigned to a life stage with a heart rate threshold of 48 to 84 bpm
+  - Given a device assigned to a life stage with a `Warning` heart rate threshold of 48 to 84 bpm
+    and a `Critical` heart rate threshold of 40 to 90 bpm
   - When the device submits a reading with a heart rate of 120 bpm
-  - Then the response is `201 Created` and a `HeartRate` alert is raised with the threshold severity
+  - Then the response is `201 Created` and one `HeartRate` alert is raised at `Critical` severity
 
 - Scenario: Failed pulse sensor
   - Given a collar submits a reading with an `invalid_reasons` entry for `heart_rate` and no heart rate
@@ -374,9 +387,20 @@ Acceptance criteria:
   - Then the response is `201 Created` and no `HeartRate` alert is raised
   - And the next synchronization sends the heart rate with a `null` value and the `invalidReason`
 
-- Scenario: Methane index without a rule
-  - Given a collar submits a methane index of 95 and a heart rate inside its threshold
-  - When the gateway evaluates the reading
+- Scenario: Methane index above the Warning maximum
+  - Given a device assigned to a life stage with a `Warning` methane index threshold of 0 to 60
+    and a `Critical` methane index threshold of 0 to 80
+  - When the device submits a reading with a methane index of 70
+  - Then the response is `201 Created` and a `Methane` alert is raised at `Warning` severity
+
+- Scenario: Methane index above the Critical maximum
+  - Given the same methane index thresholds
+  - When the device submits a reading with a methane index of 95
+  - Then the response is `201 Created` and a `Methane` alert is raised at `Critical` severity
+
+- Scenario: Methane index without a threshold
+  - Given the cached rules have no methane index threshold
+  - When the gateway evaluates a reading with a methane index of 95
   - Then the methane index is stored and synchronized
   - And no alert is raised
 

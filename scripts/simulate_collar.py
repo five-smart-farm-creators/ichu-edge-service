@@ -18,7 +18,16 @@ import requests
 READINGS_PATH = "/api/v1/monitoring/telemetry-readings"
 DEFAULT_EDGE_URL = "http://127.0.0.1:5000"
 DEFAULT_DEVICE_ID = "9d4a5f3b-3a6e-4f84-8daa-4e5f6a7b8c93"
-MODES = ("normal", "fever", "escape", "sensor-failure", "tachycardia")
+MODES = (
+    "normal",
+    "fever",
+    "escape",
+    "sensor-failure",
+    "tachycardia",
+    "tachycardia-critical",
+    "methane-spike",
+    "methane-critical",
+)
 REQUEST_TIMEOUT_SECONDS = 10
 SEND_ATTEMPTS = 3
 
@@ -62,13 +71,24 @@ def build_reading(mode, device_id, event_id, sequence, rng, now):
         "longitude": round(longitude + rng.uniform(-jitter, jitter), 6),
         "accuracy_meters": round(rng.uniform(3.0, 8.0), 2),
     }
-    # Uncalibrated MQ-2 index, not ppm; drawn last so the seeded values above do not change.
-    reading["methane_index"] = round(rng.uniform(10.0, 30.0), 2)
+    # Uncalibrated MQ-2 index, not ppm; drawn after the position so seeded runs keep their earlier values.
+    if mode == "methane-spike":
+        # Above the 60 maximum of the Warning rule, but not the 80 maximum of the Critical rule.
+        methane_index = rng.uniform(70.0, 80.0)
+    elif mode == "methane-critical":
+        # Above the 80 maximum of the Critical rule.
+        methane_index = rng.uniform(85.0, 95.0)
+    else:
+        methane_index = rng.uniform(10.0, 30.0)
+    reading["methane_index"] = round(methane_index, 2)
     if mode == "sensor-failure":
         reading["invalid_reasons"]["heart_rate"] = "Pulse sensor without contact"
     elif mode == "tachycardia":
-        # Above the 84 bpm maximum of the development rule, so the edge raises a Warning alert.
-        reading["heart_rate"] = round(rng.uniform(110.0, 130.0), 2)
+        # Between the 84 bpm Warning and the 90 bpm Critical maximums of the development rules.
+        reading["heart_rate"] = round(rng.uniform(85.0, 89.0), 2)
+    elif mode == "tachycardia-critical":
+        # Above the 90 bpm Critical maximum of the development rules.
+        reading["heart_rate"] = round(rng.uniform(100.0, 120.0), 2)
     else:
         reading["heart_rate"] = round(rng.uniform(55.0, 75.0), 2)
     return reading

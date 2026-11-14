@@ -14,6 +14,7 @@ from requests.adapters import BaseAdapter
 
 from monitoring.domain.entities import MonitoringRuleSet
 from monitoring.domain.value_objects import AlertSeverity, DeviceAssignment, MonitoredMetric, Threshold
+from monitoring.infrastructure.models import MonitoringAlertModel
 from monitoring.infrastructure.repositories import DeviceAssignmentRepository, MonitoringRuleSetRepository
 from scripts.simulate_collar import MODES, CollarRejected, build_reading, main, send_reading
 
@@ -110,13 +111,21 @@ class BuildReadingTestCase(unittest.TestCase):
             },
         )
 
-    def test_tachycardia_heart_rate_is_above_the_demo_maximum(self):
+    def test_tachycardia_heart_rate_is_between_the_warning_and_critical_maximums(self):
         for seed in range(10):
             with self.subTest(seed=seed):
                 heart_rate = sample_reading("tachycardia", seed=seed)["heart_rate"]
 
-                self.assertGreaterEqual(heart_rate, 110.0)
-                self.assertLessEqual(heart_rate, 130.0)
+                self.assertGreaterEqual(heart_rate, 85.0)
+                self.assertLessEqual(heart_rate, 89.0)
+
+    def test_tachycardia_critical_heart_rate_is_above_the_critical_maximum(self):
+        for seed in range(10):
+            with self.subTest(seed=seed):
+                heart_rate = sample_reading("tachycardia-critical", seed=seed)["heart_rate"]
+
+                self.assertGreaterEqual(heart_rate, 100.0)
+                self.assertLessEqual(heart_rate, 120.0)
 
     def test_every_mode_uses_utc_timestamps_and_battery_drops_with_the_sequence(self):
         for mode in MODES:
@@ -138,14 +147,16 @@ class BuildReadingTestCase(unittest.TestCase):
                     self.assertGreaterEqual(heart_rate, 55.0)
                     self.assertLessEqual(heart_rate, 75.0)
 
-    def test_every_mode_sends_a_methane_index_from_10_to_30(self):
+    def test_methane_index_range_depends_on_the_mode(self):
+        ranges = {"methane-spike": (70.0, 80.0), "methane-critical": (85.0, 95.0)}
         for mode in MODES:
+            low, high = ranges.get(mode, (10.0, 30.0))
             for seed in range(10):
                 with self.subTest(mode=mode, seed=seed):
                     methane_index = sample_reading(mode, seed=seed)["methane_index"]
 
-                    self.assertGreaterEqual(methane_index, 10.0)
-                    self.assertLessEqual(methane_index, 30.0)
+                    self.assertGreaterEqual(methane_index, low)
+                    self.assertLessEqual(methane_index, high)
 
     def test_same_seed_gives_the_same_reading(self):
         first = build_reading("escape", DEVICE_ID, "sim-9d4a5f3b-1-000001", 1, random.Random(42), NOW)
@@ -295,32 +306,71 @@ class EdgeIntegrationTestCase(unittest.TestCase):
                         84.0,
                         AlertSeverity.WARNING,
                     ),
+                    Threshold(
+                        uuid.uuid4(),
+                        "MilkingCow",
+                        MonitoredMetric.HEART_RATE,
+                        40.0,
+                        90.0,
+                        AlertSeverity.CRITICAL,
+                    ),
+                    Threshold(
+                        uuid.uuid4(),
+                        "MilkingCow",
+                        MonitoredMetric.METHANE_INDEX,
+                        0.0,
+                        60.0,
+                        AlertSeverity.WARNING,
+                    ),
+                    Threshold(
+                        uuid.uuid4(),
+                        "MilkingCow",
+                        MonitoredMetric.METHANE_INDEX,
+                        0.0,
+                        80.0,
+                        AlertSeverity.CRITICAL,
+                    ),
                 ),
                 (),
             )
         )
 
-    def test_fever_reading_is_accepted_and_raises_a_critical_temperature_alert(self):
+    def setUp(self):
+        # Alerts left by an earlier test would suppress the same-type alert that this test expects.
+        MonitoringAlertModel.delete().execute()
+
+    def run_simulator(self, mode):
         session = requests.Session()
         session.mount("http://", FlaskTransportAdapter(self.app.test_client()))
         output = io.StringIO()
 
         with patch.dict(os.environ, {"DEVICE_API_KEY": API_KEY}), redirect_stdout(output):
-            code = main(["--mode", "fever", "--seed", "11"], session=session)
+            code = main(["--mode", mode, "--seed", "11"], session=session)
+        return code, output.getvalue()
+
+    def test_fever_reading_is_accepted_and_raises_a_critical_temperature_alert(self):
+        code, output = self.run_simulator("fever")
 
         self.assertEqual(code, 0)
-        self.assertRegex(output.getvalue(), r" 201 alerts=Temperature/Critical\n")
+        self.assertRegex(output, r" 201 alerts=Temperature/Critical\n")
 
     def test_tachycardia_reading_is_accepted_and_raises_a_heart_rate_warning(self):
-        session = requests.Session()
-        session.mount("http://", FlaskTransportAdapter(self.app.test_client()))
-        output = io.StringIO()
-
-        with patch.dict(os.environ, {"DEVICE_API_KEY": API_KEY}), redirect_stdout(output):
-            code = main(["--mode", "tachycardia", "--seed", "11"], session=session)
+        code, output = self.run_simulator("tachycardia")
 
         self.assertEqual(code, 0)
-        self.assertRegex(output.getvalue(), r" 201 alerts=HeartRate/Warning\n")
+        self.assertRegex(output, r" 201 alerts=HeartRate/Warning\n")
+
+    def test_tachycardia_critical_reading_raises_a_heart_rate_critical(self):
+        code, output = self.run_simulator("tachycardia-critical")
+
+        self.assertEqual(code, 0)
+        self.assertRegex(output, r" 201 alerts=HeartRate/Critical\n")
+
+    def test_methane_spike_reading_raises_only_a_methane_warning(self):
+        code, output = self.run_simulator("methane-spike")
+
+        self.assertEqual(code, 0)
+        self.assertRegex(output, r" 201 alerts=Methane/Warning\n")
 
 
 if __name__ == "__main__":

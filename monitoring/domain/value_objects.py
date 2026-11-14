@@ -14,6 +14,7 @@ class MonitoredMetric(Enum):
     BODY_TEMPERATURE = "BodyTemperature"
     ACTIVITY_INDEX = "ActivityIndex"
     HEART_RATE = "HeartRate"
+    METHANE_INDEX = "MethaneIndex"
 
 
 class AlertType(Enum):
@@ -23,14 +24,20 @@ class AlertType(Enum):
     ACTIVITY = "Activity"
     GEOFENCE = "Geofence"
     HEART_RATE = "HeartRate"
+    METHANE = "Methane"
 
 
 class AlertSeverity(Enum):
-    """Severity levels shared with the ICHU cloud contract."""
+    """Severity levels shared with the ICHU cloud contract, declared from least to most urgent."""
 
     INFORMATIVE = "Informative"
     WARNING = "Warning"
     CRITICAL = "Critical"
+
+    @property
+    def urgency(self) -> int:
+        """Return the urgency rank; a higher rank is more urgent."""
+        return list(AlertSeverity).index(self)
 
 
 class SyncStatus(Enum):

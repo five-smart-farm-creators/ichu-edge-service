@@ -311,7 +311,7 @@ for different telemetry returns `409 Conflict`.
 
 ## ADR-0011: Deduplicate alerts within a configurable window
 
-- **Status**: Accepted
+- **Status**: Superseded by ADR-0017
 - **Date**: 2026-11-07
 
 ### Context
@@ -500,3 +500,34 @@ ADR-0009.
 - Sending an absent field as `null` without a reason, which cannot tell a fault from a measurement not taken.
 - Buffering the geofence polygon by the accuracy, which needs geometry where a distance comparison is enough.
 - Treating a missing accuracy as zero, which accepts a position that the cloud core rejects.
+
+## ADR-0017: Warning and Critical levels per metric, with escalation
+
+- **Status**: Accepted
+- **Date**: 2026-11-14
+- **Supersedes**: ADR-0011
+
+### Context
+
+The ranch asked for two alert levels, attention and urgent, for heart rate and methane. The cloud
+now allows one threshold per life stage, metric and severity, so a metric can have a Warning range
+and a wider Critical range. ADR-0011 would hide a heart rate that worsens from Warning to Critical
+for up to `ALERT_DEDUPLICATION_MINUTES`.
+
+### Decision
+
+- A reading that breaks several thresholds of one metric raises one violation, from the most
+  severe threshold.
+- A recent alert of the same device and type suppresses a new one only when its severity is equal
+  or higher. The window stays `ALERT_DEDUPLICATION_MINUTES`.
+
+### Consequences
+
+- A worsening condition raises the urgent alert at once, and the panel turns red.
+- Within the window a device raises at most one alert per type and severity.
+- No extra state is needed: the newest recent alert already holds the highest severity in the window.
+
+### Alternatives considered
+
+- Keeping ADR-0011, which delays urgent alerts.
+- Separate alert types per level, which doubles the types that the cloud, the web and the panel show.
