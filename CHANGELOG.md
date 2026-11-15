@@ -9,6 +9,8 @@ individually.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-14
+
 ### Removed
 
 - The water trough controller is no longer planned; the edge serves the collar and the alert display panel.
