@@ -40,6 +40,6 @@ class AuthApplicationService:
             raise ValueError("Device not found")
         return self.device_repository.save(device.rotate_api_key(new_api_key))
 
-    def get_or_create_device(self, device_id: str, api_key: str) -> Device:
-        """Retrieve the identified device, creating it if it does not exist."""
+    def get_or_create_device(self, device_id: str, api_key: str) -> tuple[Device, bool]:
+        """Retrieve the identified device, creating it if absent; report whether it was created."""
         return self.device_repository.get_or_create_device(device_id, api_key)

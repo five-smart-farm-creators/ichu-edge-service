@@ -4,7 +4,10 @@ from pathlib import Path
 
 from peewee import SqliteDatabase
 
-db = SqliteDatabase(None, timeout=30, pragmas={"busy_timeout": 30_000})
+# WAL lets the API keep reading while the synchronizer process writes.
+db = SqliteDatabase(
+    None, timeout=30, pragmas={"journal_mode": "wal", "busy_timeout": 30_000}
+)
 
 
 def configure_database(database_path: str) -> None:

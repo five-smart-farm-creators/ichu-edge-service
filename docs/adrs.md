@@ -220,7 +220,7 @@ successful verification into a `SubmittingDevice`, and returns no device otherwi
 
 ## ADR-0008: Synchronize with the cloud using store-and-forward batches
 
-- **Status**: Accepted
+- **Status**: Accepted, partly superseded by ADR-0013 and ADR-0014
 - **Date**: 2026-11-07
 
 ### Context
@@ -253,7 +253,7 @@ the default in the development profile.
 
 ## ADR-0009: Evaluate monitoring rules locally against cached rules
 
-- **Status**: Accepted
+- **Status**: Accepted, partly superseded by ADR-0016
 - **Date**: 2026-11-07
 
 ### Context
@@ -311,7 +311,7 @@ for different telemetry returns `409 Conflict`.
 
 ## ADR-0011: Deduplicate alerts within a configurable window
 
-- **Status**: Accepted
+- **Status**: Superseded by ADR-0017
 - **Date**: 2026-11-07
 
 ### Context
@@ -336,3 +336,198 @@ evaluated most severe first, so the most severe alert wins within one reading.
 
 - One alert per reading, which floods operators.
 - Deduplication by severity change, which needs extra state per alert.
+
+## ADR-0012: Derive the gateway identity from the issued key
+
+- **Status**: Accepted
+- **Date**: 2026-11-12
+
+### Context
+
+The backend issues each gateway key as `{gatewayId}.{secret}`. A separate `EDGE_GATEWAY_ID`
+setting could disagree with the key it accompanies, and telemetry would then be sent under a
+gateway identity that the key does not match.
+
+### Decision
+
+Read the gateway id from the part of `EDGE_GATEWAY_KEY` before the first `.`, which must be a
+UUID. `EDGE_GATEWAY_ID` is no longer a setting.
+
+### Consequences
+
+- The configuration holds one value that identifies the gateway, so the two cannot drift.
+- A malformed key fails at startup, even when cloud synchronization is disabled.
+
+### Alternatives considered
+
+- Keeping `EDGE_GATEWAY_ID` and checking it against the key, which keeps two values that must agree.
+
+## ADR-0013: Run the periodic synchronizer as a separate CLI process
+
+- **Status**: Accepted
+- **Date**: 2026-11-12
+
+### Context
+
+Pending readings must reach the cloud without an operator calling
+`POST /api/v1/synchronizations`, and the cloud can stay down for hours. A loop started from
+`create_app()` would run inside the web server: the Flask development reloader runs the factory
+twice, so the loop would start twice against the same database, and stopping it would stop ingestion too.
+
+### Decision
+
+Run the loop as the `synchronize` command of the Flask CLI (`flask --app app synchronize`), in its
+own process next to the web server. Each cycle calls the same use case as the manual endpoint.
+`SYNC_INTERVAL_SECONDS` sets the pause between cycles, and `--once` runs a single cycle for scripts
+or cron. The manual endpoint stays available.
+
+### Consequences
+
+- The web server and the synchronizer restart independently, and stopping one never stops the other.
+- The development reloader does not start a second synchronizer.
+- Both processes write the same SQLite file; the busy timeout in `shared/infrastructure/database.py`
+  makes their writes wait for each other.
+- Operators must start and supervise a second process on the gateway.
+
+### Alternatives considered
+
+- A thread started in `create_app()`, which runs twice under the reloader and ends with the web server.
+- A cron job that calls `POST /api/v1/synchronizations`, which cannot back off between failed attempts.
+
+## ADR-0014: Retry conflicts a bounded number of times and isolate refused batches
+
+- **Status**: Accepted
+- **Date**: 2026-11-12
+
+### Context
+
+The cloud answers `Conflict` for a transient race, such as a reading that was being stored at the same
+moment, and the same entry becomes `Duplicate` on the next try. Rejecting on the first conflict would
+discard telemetry the cloud would accept. The cloud also refuses a whole batch with `400` or `422` when
+one entry is invalid, so one bad reading would block every entry sent with it.
+
+### Decision
+
+A `Conflict` keeps the entry `pending` and increments its `sync_attempts`; the fifth conflicting answer
+rejects it with the cloud's reason. A refused batch is split into two halves, and the first half is sent
+before the second. Readings precede alerts in the split, so an alert never reaches the cloud before a
+reading it cites. The split repeats until the invalid entry is alone; that entry counts an attempt like a conflict and
+is rejected with `Refused by the ICHU cloud API as invalid` after the fifth refusal. Outages and rejected credentials still stop the cycle, and
+every unanswered record stays `pending`.
+
+### Consequences
+
+- A transient race resolves on a later attempt instead of rejecting telemetry.
+- A batch with one invalid entry takes about two requests per halving step, so roughly `2 log2(n)`
+  requests for `n` entries.
+- A `400` or `422` caused by something other than one entry, such as a contract mismatch, refuses each
+  record on its own; the five attempts give time to fix the cloud before records are rejected.
+- Rejected entries keep their reason, as in ADR-0008.
+
+### Alternatives considered
+
+- Rejecting a conflict on the first answer, which discards telemetry a retry would accept.
+- Resending a refused batch unchanged, which the cloud refuses again.
+- Dropping an invalid entry without a reason, which hides it from operators.
+
+## ADR-0015: Collar assignments owned by the cloud
+
+- **Status**: Accepted
+- **Date**: 2026-11-12
+
+### Context
+
+The lot and life stage of the animal that wears each collar are decided in the ICHU cloud, and they
+change as the herd does. Assignments seeded on the gateway drift from the cloud, while the rule
+evaluator needs the current assignment to choose thresholds and geofences. A collar created only in
+the cloud has no local record, so it cannot authenticate either.
+
+### Decision
+
+Each synchronization downloads the assignments of the gateway's ranch after the rules and before the
+batches, and replaces the local table in one transaction, because the cloud's list is authoritative.
+Development seeding registers the development devices without assignments. A collar that exists only
+in the cloud is registered with `flask --app app register-device`, using the key issued for that collar
+from the `DEVICE_API_KEY` environment variable.
+
+### Consequences
+
+- Assignments are as current as the last successful synchronization; a change made while the gateway
+  is offline reaches the evaluator at the next one.
+- A collar that the cloud stops listing stops being evaluated at the next synchronization.
+- Each collar needs one registration per gateway, performed by an operator with the key issued for it.
+- A development collar is not evaluated until a synchronization has downloaded its assignment.
+
+### Alternatives considered
+
+- Keeping the lots and life stages in the development seed, which drifts from the cloud.
+- Merging the cloud list into the local table, which keeps assignments that the cloud has ended.
+- Creating collars from the assignment download, which needs a credential that the download does not carry.
+
+## ADR-0016: Per-field measurement validity and accuracy-aware geofences
+
+- **Status**: Accepted
+- **Date**: 2026-11-12
+
+### Context
+
+A collar that cannot read a sensor used to omit that field, so the gateway could not tell a sensor
+fault from a measurement that was never taken. A GPS fix also carries an error radius: an animal inside
+a geofence near its edge can be reported just outside it, which raised a false geofence alert. The cloud
+core rejects a position that has no accuracy, so the gateway must require it.
+
+### Decision
+
+Accept `invalid_reasons`, an optional object keyed by measurement field (`body_temperature`,
+`activity_index`, `battery_level`, `position`). Each reason is text of 1 to 200 characters, and a field
+carries either a value or a reason, never both. A reading whose fields are all invalid is still valid.
+Reasons are stored as a JSON column, sent to the cloud as `invalidReason` with a `null` value, and never
+evaluated against thresholds. Every position requires `accuracy_meters`. A geofence is violated only when
+the distance to its boundary exceeds the tolerance plus the accuracy, which supersedes the geofence rule of
+ADR-0009.
+
+### Consequences
+
+- A sensor fault reaches the cloud and the operator with its reason instead of a missing value.
+- A failed sensor cannot raise a threshold alert, because it has no value to compare.
+- A position within the GPS error of a geofence is not alerted; the animal must be farther outside than
+  the tolerance plus its accuracy.
+- A client that omits `accuracy_meters` receives `400 Bad Request`; the firmware already sends it.
+- Existing databases gain the `invalid_reasons` column when the service starts.
+
+### Alternatives considered
+
+- Sending an absent field as `null` without a reason, which cannot tell a fault from a measurement not taken.
+- Buffering the geofence polygon by the accuracy, which needs geometry where a distance comparison is enough.
+- Treating a missing accuracy as zero, which accepts a position that the cloud core rejects.
+
+## ADR-0017: Warning and Critical levels per metric, with escalation
+
+- **Status**: Accepted
+- **Date**: 2026-11-14
+- **Supersedes**: ADR-0011
+
+### Context
+
+The ranch asked for two alert levels, attention and urgent, for heart rate and methane. The cloud
+now allows one threshold per life stage, metric and severity, so a metric can have a Warning range
+and a wider Critical range. ADR-0011 would hide a heart rate that worsens from Warning to Critical
+for up to `ALERT_DEDUPLICATION_MINUTES`.
+
+### Decision
+
+- A reading that breaks several thresholds of one metric raises one violation, from the most
+  severe threshold.
+- A recent alert of the same device and type suppresses a new one only when its severity is equal
+  or higher. The window stays `ALERT_DEDUPLICATION_MINUTES`.
+
+### Consequences
+
+- A worsening condition raises the urgent alert at once, and the panel turns red.
+- Within the window a device raises at most one alert per type and severity.
+- No extra state is needed: the newest recent alert already holds the highest severity in the window.
+
+### Alternatives considered
+
+- Keeping ADR-0011, which delays urgent alerts.
+- Separate alert types per level, which doubles the types that the cloud, the web and the panel show.

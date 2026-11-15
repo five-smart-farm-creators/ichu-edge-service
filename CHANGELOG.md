@@ -9,6 +9,60 @@ individually.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-14
+
+### Removed
+
+- The water trough controller is no longer planned; the edge serves the collar and the alert display panel.
+
+### Added
+
+- README guide for a local end-to-end demo (collar, edge, backend, and web application) with a
+  troubleshooting table.
+- GitHub Actions `test` job that runs the unit test suite on pull requests.
+- Periodic synchronizer command, `flask --app app synchronize`, with `--interval` and `--once`,
+  back-off after failed cycles, and a clean stop on Ctrl+C.
+- `SYNC_INTERVAL_SECONDS` configuration, from 5 to 3600 seconds (default 15).
+- `deferred` count in the `POST /api/v1/synchronizations` response.
+- Collar assignments (lot and life stage) are downloaded from the cloud on every synchronization, and a
+  collar that the cloud no longer lists loses its assignment. Each cycle logs the number downloaded.
+- `assignments` count in the `POST /api/v1/synchronizations` response.
+- `flask --app app register-device DEVICE_ID` registers a collar with the key in the `DEVICE_API_KEY`
+  environment variable, so a collar that exists only in the cloud can authenticate.
+- `invalid_reasons` in telemetry readings: a collar reports why a measurement it could not capture is
+  missing. The reason is stored, echoed in the response, and sent to the cloud as `invalidReason`.
+  Existing databases gain the column when the service starts.
+- Collar simulator, `scripts/simulate_collar.py`, which sends the firmware telemetry JSON with its
+  retry rules to the edge, for tests without hardware.
+- `heart_rate` (30 to 200 bpm) and `methane_index` (0 to 100, an uncalibrated MQ-2 index, not ppm) in
+  telemetry readings. Both are optional, echoed in the response, and sent to the cloud as `heartRate`
+  and `methaneIndex`. A `HeartRate` threshold raises a `HeartRate` alert, and a `MethaneIndex` threshold
+  raises a `Methane` alert. Existing databases gain the columns when the service starts.
+- Warning and Critical thresholds for the same metric and life stage. A reading that breaks both raises
+  one alert, at the Critical severity.
+- Collar simulator modes `tachycardia` (85 to 89 bpm, a Warning), `tachycardia-critical` (100 to 120 bpm),
+  `methane-spike`, and `methane-critical`. Every simulated reading now includes a `methane_index` and
+  either a `heart_rate` or the reason its pulse sensor failed.
+
+### Changed
+
+- Documented the backend gateway key format `{gatewayId}.{secret}` and the key of the
+  seeded development gateway, which replaces the backend's development simulation.
+- The gateway id is derived from `EDGE_GATEWAY_KEY`; `EDGE_GATEWAY_ID` is removed.
+- Production requires an https `CLOUD_API_BASE_URL`, except for localhost.
+- SQLite runs in WAL mode so reads continue while another process writes.
+- A cloud `Conflict` keeps the entry pending and is retried up to 5 times before the entry is
+  rejected with the cloud's reason.
+- A batch that the cloud refuses with HTTP 400 or 422 is split, so only the invalid entries are retried and, after 5 refusals, rejected.
+- Existing databases gain the `sync_attempts` column when the service starts.
+- Development seeding registers the development devices only; their lots and life stages come from the cloud.
+- `position.accuracy_meters` is required, and a geofence is violated only when the position is farther
+  outside than the tolerance plus the GPS accuracy.
+- A threshold for a metric that the edge does not know is skipped with a warning, so the other
+  rules still apply after the cloud adds a metric.
+- Alert deduplication compares severity: a recent alert of the same type suppresses a new one only when
+  its severity is equal or higher, so a violation that worsens within the window raises a new alert.
+
 ## [0.1.0] - 2026-11-07
 
 ### Added

@@ -1,6 +1,7 @@
 """Domain entities for the Monitoring bounded context."""
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
@@ -12,6 +13,9 @@ from monitoring.domain.value_objects import (
     BodyTemperature,
     Geofence,
     GeoPosition,
+    HeartRate,
+    InvalidMeasurementReasons,
+    MethaneIndex,
     RecordedAt,
     SyncStatus,
     TelemetryEventId,
@@ -27,6 +31,12 @@ def _check_rejection(sync_status: SyncStatus, rejection_reason: str | None) -> N
             raise ValueError("Rejected records require a rejection reason")
     elif rejection_reason is not None:
         raise ValueError("Only rejected records carry a rejection reason")
+
+
+def _check_sync_attempts(sync_attempts: int) -> None:
+    """Require a count of failed synchronization attempts that is a non-negative integer."""
+    if isinstance(sync_attempts, bool) or not isinstance(sync_attempts, int) or sync_attempts < 0:
+        raise ValueError("Synchronization attempts must be a non-negative integer")
 
 
 @dataclass(frozen=True)
@@ -54,8 +64,12 @@ class TelemetryReading:
     activity_index: ActivityIndex | None = None
     battery_level: BatteryLevel | None = None
     position: GeoPosition | None = None
+    invalid_reasons: InvalidMeasurementReasons = InvalidMeasurementReasons()
+    heart_rate: HeartRate | None = None
+    methane_index: MethaneIndex | None = None
     sync_status: SyncStatus = SyncStatus.PENDING
     rejection_reason: str | None = None
+    sync_attempts: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.reading_id, uuid.UUID):
@@ -82,19 +96,30 @@ class TelemetryReading:
             raise TypeError("Battery level must be a BatteryLevel value")
         if self.position is not None and not isinstance(self.position, GeoPosition):
             raise TypeError("Position must be a GeoPosition value")
-        if all(
-            measurement is None
-            for measurement in (
-                self.body_temperature,
-                self.activity_index,
-                self.battery_level,
-                self.position,
+        if not isinstance(self.invalid_reasons, InvalidMeasurementReasons):
+            raise TypeError("Invalid reasons must be an InvalidMeasurementReasons value")
+        if self.heart_rate is not None and not isinstance(self.heart_rate, HeartRate):
+            raise TypeError("Heart rate must be a HeartRate value")
+        if self.methane_index is not None and not isinstance(self.methane_index, MethaneIndex):
+            raise TypeError("Methane index must be a MethaneIndex value")
+        measurements = {
+            "body_temperature": self.body_temperature,
+            "activity_index": self.activity_index,
+            "battery_level": self.battery_level,
+            "position": self.position,
+            "heart_rate": self.heart_rate,
+            "methane_index": self.methane_index,
+        }
+        if any(measurements[field] is not None for field in self.invalid_reasons.fields()):
+            raise ValueError("A measurement cannot be both captured and invalid")
+        if not self.invalid_reasons and all(value is None for value in measurements.values()):
+            raise ValueError(
+                "Telemetry reading requires at least one measurement value or invalid reason"
             )
-        ):
-            raise ValueError("Telemetry reading requires at least one measurement")
         if not isinstance(self.sync_status, SyncStatus):
             raise TypeError("TelemetryReading sync status must be a SyncStatus")
         _check_rejection(self.sync_status, self.rejection_reason)
+        _check_sync_attempts(self.sync_attempts)
 
     @classmethod
     def record(
@@ -106,6 +131,9 @@ class TelemetryReading:
         activity_index: float | None,
         battery_level: float | None,
         position: GeoPosition | None,
+        invalid_reasons: Mapping[str, str] | None = None,
+        heart_rate: float | None = None,
+        methane_index: float | None = None,
     ) -> "TelemetryReading":
         """Create a new pending reading, enforcing domain invariants."""
         return cls(
@@ -118,6 +146,9 @@ class TelemetryReading:
             None if activity_index is None else ActivityIndex(activity_index),
             None if battery_level is None else BatteryLevel(battery_level),
             position,
+            InvalidMeasurementReasons(invalid_reasons),
+            None if heart_rate is None else HeartRate(heart_rate),
+            None if methane_index is None else MethaneIndex(methane_index),
         )
 
     @classmethod
@@ -132,8 +163,12 @@ class TelemetryReading:
         activity_index: ActivityIndex | None,
         battery_level: BatteryLevel | None,
         position: GeoPosition | None,
+        invalid_reasons: InvalidMeasurementReasons,
+        heart_rate: HeartRate | None,
+        methane_index: MethaneIndex | None,
         sync_status: SyncStatus,
         rejection_reason: str | None,
+        sync_attempts: int,
     ) -> "TelemetryReading":
         """Rebuild a persisted reading with its stored synchronization state."""
         return cls(
@@ -146,8 +181,12 @@ class TelemetryReading:
             activity_index,
             battery_level,
             position,
+            invalid_reasons,
+            heart_rate,
+            methane_index,
             sync_status,
             rejection_reason,
+            sync_attempts,
         )
 
     @property
@@ -163,6 +202,20 @@ class TelemetryReading:
         """Return this reading as rejected by the cloud, with the cloud's reason."""
         return replace(self, sync_status=SyncStatus.REJECTED, rejection_reason=reason)
 
+    def defer_retry(self, reason: str, max_attempts: int) -> "TelemetryReading":
+        """Keep the record pending for another attempt, rejecting it once the attempts run out."""
+        if max_attempts < 1:
+            raise ValueError("Maximum synchronization attempts must be at least one")
+        attempts = self.sync_attempts + 1
+        if attempts >= max_attempts:
+            return replace(
+                self,
+                sync_status=SyncStatus.REJECTED,
+                rejection_reason=reason,
+                sync_attempts=attempts,
+            )
+        return replace(self, sync_attempts=attempts)
+
     def same_telemetry_as(self, other: "TelemetryReading") -> bool:
         """Return whether two submissions carry the same telemetry; time counts only when device-supplied."""
         if self.timestamp_supplied != other.timestamp_supplied:
@@ -174,11 +227,17 @@ class TelemetryReading:
             self.activity_index,
             self.battery_level,
             self.position,
+            self.invalid_reasons,
+            self.heart_rate,
+            self.methane_index,
         ) == (
             other.body_temperature,
             other.activity_index,
             other.battery_level,
             other.position,
+            other.invalid_reasons,
+            other.heart_rate,
+            other.methane_index,
         )
 
 
@@ -199,6 +258,7 @@ class MonitoringAlert:
     distance_to_boundary_meters: float | None = None
     sync_status: SyncStatus = SyncStatus.PENDING
     rejection_reason: str | None = None
+    sync_attempts: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.alert_id, uuid.UUID):
@@ -227,10 +287,11 @@ class MonitoringAlert:
         object.__setattr__(self, "raised_at", self.raised_at.astimezone(UTC))
         self._check_type_specific_fields()
         _check_rejection(self.sync_status, self.rejection_reason)
+        _check_sync_attempts(self.sync_attempts)
 
     def _check_type_specific_fields(self) -> None:
         """Enforce which threshold or geofence fields each alert type carries."""
-        if self.type in (AlertType.TEMPERATURE, AlertType.ACTIVITY):
+        if self.type in (AlertType.TEMPERATURE, AlertType.ACTIVITY, AlertType.HEART_RATE, AlertType.METHANE):
             if self.threshold_min_value is None or self.threshold_max_value is None:
                 raise ValueError("Threshold alerts require threshold minimum and maximum")
             if self.threshold_min_value >= self.threshold_max_value:
@@ -290,6 +351,7 @@ class MonitoringAlert:
         distance_to_boundary_meters: float | None,
         sync_status: SyncStatus,
         rejection_reason: str | None,
+        sync_attempts: int,
     ) -> "MonitoringAlert":
         """Rebuild a persisted alert with its stored synchronization state."""
         return cls(
@@ -306,6 +368,7 @@ class MonitoringAlert:
             distance_to_boundary_meters,
             sync_status,
             rejection_reason,
+            sync_attempts,
         )
 
     def mark_synced(self) -> "MonitoringAlert":
@@ -315,6 +378,20 @@ class MonitoringAlert:
     def mark_rejected(self, reason: str) -> "MonitoringAlert":
         """Return this alert as rejected by the cloud, with the cloud's reason."""
         return replace(self, sync_status=SyncStatus.REJECTED, rejection_reason=reason)
+
+    def defer_retry(self, reason: str, max_attempts: int) -> "MonitoringAlert":
+        """Keep the record pending for another attempt, rejecting it once the attempts run out."""
+        if max_attempts < 1:
+            raise ValueError("Maximum synchronization attempts must be at least one")
+        attempts = self.sync_attempts + 1
+        if attempts >= max_attempts:
+            return replace(
+                self,
+                sync_status=SyncStatus.REJECTED,
+                rejection_reason=reason,
+                sync_attempts=attempts,
+            )
+        return replace(self, sync_attempts=attempts)
 
 
 @dataclass(frozen=True)

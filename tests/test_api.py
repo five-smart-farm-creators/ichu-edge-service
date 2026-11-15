@@ -14,6 +14,7 @@ from app import create_app
 from monitoring.domain.entities import MonitoringRuleSet
 from monitoring.domain.value_objects import AlertSeverity, DeviceAssignment, MonitoredMetric, Threshold
 from monitoring.infrastructure.repositories import DeviceAssignmentRepository, MonitoringRuleSetRepository
+from shared.infrastructure.database import db
 
 
 DEVICE_KEY = "test-only-key"
@@ -55,6 +56,11 @@ class StatusApiTestCase(ApiTestCase):
         self.assertIsInstance(response.json["rulesRevision"], int)
         self.assertIsInstance(response.json["pendingReadings"], int)
         self.assertIsInstance(response.json["pendingAlerts"], int)
+
+
+class DatabaseTestCase(ApiTestCase):
+    def test_uses_write_ahead_logging(self):
+        self.assertEqual(db.execute_sql("PRAGMA journal_mode").fetchone()[0], "wal")
 
 
 class IamApiTestCase(ApiTestCase):
@@ -129,6 +135,9 @@ class TelemetryApiTestCase(ApiTestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json["reading"]["event_id"], "event-create-1")
         self.assertEqual(response.json["reading"]["recorded_at"], "2026-11-07T15:00:00Z")
+        self.assertEqual(response.json["reading"]["invalid_reasons"], {})
+        self.assertIsNone(response.json["reading"]["heart_rate"])
+        self.assertIsNone(response.json["reading"]["methane_index"])
         self.assertEqual(response.json["reading"]["sync_status"], "pending")
         self.assertEqual(response.json["alerts"], [])
 
@@ -177,7 +186,7 @@ class TelemetryApiTestCase(ApiTestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_rejects_position_outside_its_range(self):
-        position = {"latitude": 95.0, "longitude": -68.1}
+        position = {"latitude": 95.0, "longitude": -68.1, "accuracy_meters": 4.0}
         response = self.post_reading(reading_payload("event-position-1", position=position))
 
         self.assertEqual(response.status_code, 400)
@@ -197,6 +206,123 @@ class TelemetryApiTestCase(ApiTestCase):
         )
 
         self.assertEqual(response.status_code, 415)
+
+    def test_rejects_position_without_accuracy(self):
+        position = {"latitude": -16.5, "longitude": -68.1}
+        response = self.post_reading(reading_payload("event-no-accuracy-1", position=position))
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_accepts_failed_sensor_with_its_reason_and_echoes_it(self):
+        response = self.post_reading(
+            reading_payload(
+                "event-invalid-1",
+                body_temperature=None,
+                activity_index=42.0,
+                invalid_reasons={"body_temperature": "Sensor did not respond"},
+            )
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertIsNone(response.json["reading"]["body_temperature"])
+        self.assertEqual(
+            response.json["reading"]["invalid_reasons"], {"body_temperature": "Sensor did not respond"}
+        )
+
+    def test_identical_retry_with_invalid_reasons_returns_the_original_reading(self):
+        payload = reading_payload(
+            "event-invalid-retry-1",
+            body_temperature=None,
+            invalid_reasons={"body_temperature": "Sensor did not respond"},
+        )
+        first = self.post_reading(payload)
+        retry = self.post_reading(payload)
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(retry.status_code, 200)
+        self.assertEqual(retry.json["reading"]["reading_id"], first.json["reading"]["reading_id"])
+
+    def test_reusing_event_id_with_another_reason_conflicts(self):
+        self.post_reading(
+            reading_payload(
+                "event-invalid-conflict-1",
+                body_temperature=None,
+                invalid_reasons={"body_temperature": "Sensor did not respond"},
+            )
+        )
+        conflicting = self.post_reading(
+            reading_payload(
+                "event-invalid-conflict-1",
+                body_temperature=None,
+                invalid_reasons={"body_temperature": "Probe unplugged"},
+            )
+        )
+
+        self.assertEqual(conflicting.status_code, 409)
+
+    def test_rejects_unknown_field_and_blank_or_overlong_reason(self):
+        for invalid_reasons in (
+            {"blood_pressure": "Sensor did not respond"},
+            {"body_temperature": "   "},
+            {"body_temperature": "x" * 201},
+        ):
+            with self.subTest(invalid_reasons=invalid_reasons):
+                response = self.post_reading(
+                    reading_payload("event-invalid-field-1", body_temperature=None, invalid_reasons=invalid_reasons)
+                )
+
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json, {"error": "Invalid telemetry reading data"})
+
+    def test_rejects_value_and_reason_for_the_same_field(self):
+        response = self.post_reading(
+            reading_payload(
+                "event-invalid-both-1", invalid_reasons={"body_temperature": "Sensor did not respond"}
+            )
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_accepts_pulse_and_methane_index_and_echoes_them(self):
+        response = self.post_reading(
+            reading_payload("event-pulse-1", heart_rate=72.0, methane_index=18.5)
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json["reading"]["heart_rate"], 72.0)
+        self.assertEqual(response.json["reading"]["methane_index"], 18.5)
+
+    def test_identical_retry_with_pulse_returns_the_original_reading(self):
+        payload = reading_payload("event-pulse-retry-1", heart_rate=72.0, methane_index=18.5)
+        first = self.post_reading(payload)
+        retry = self.post_reading(payload)
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(retry.status_code, 200)
+        self.assertEqual(retry.json["reading"]["reading_id"], first.json["reading"]["reading_id"])
+
+    def test_reusing_event_id_with_another_pulse_conflicts(self):
+        self.post_reading(reading_payload("event-pulse-conflict-1", heart_rate=72.0))
+        conflicting = self.post_reading(reading_payload("event-pulse-conflict-1", heart_rate=80.0))
+
+        self.assertEqual(conflicting.status_code, 409)
+
+    def test_rejects_pulse_and_methane_index_outside_their_ranges(self):
+        for measurements in (
+            {"heart_rate": 29.9},
+            {"heart_rate": 200.1},
+            {"methane_index": -0.1},
+            {"methane_index": 100.1},
+        ):
+            with self.subTest(measurements=measurements):
+                response = self.post_reading(reading_payload("event-gas-range-1", **measurements))
+
+                self.assertEqual(response.status_code, 400)
+
+    def test_still_rejects_unknown_top_level_fields(self):
+        response = self.post_reading(reading_payload("event-unknown-field-1", spo2=98.0))
+
+        self.assertEqual(response.status_code, 400)
 
 
 class AlertsApiTestCase(ApiTestCase):
@@ -220,9 +346,23 @@ class AlertsApiTestCase(ApiTestCase):
                         39.5,
                         AlertSeverity.WARNING,
                     ),
+                    Threshold(
+                        uuid.uuid4(),
+                        "Calf",
+                        MonitoredMetric.BODY_TEMPERATURE,
+                        36.0,
+                        40.5,
+                        AlertSeverity.CRITICAL,
+                    ),
                 ),
                 (),
             )
+        )
+
+    def post_calf_temperature(self, event_id, temperature):
+        return self.post_reading(
+            reading_payload(event_id, device_id=self.calf_device_id, body_temperature=temperature),
+            api_key="calf-test-key",
         )
 
     def test_raises_alert_once_and_deduplicates_within_the_window(self):
@@ -245,6 +385,22 @@ class AlertsApiTestCase(ApiTestCase):
         self.assertEqual(second.status_code, 201)
         self.assertEqual(second.json["alerts"], [])
 
+    def test_critical_violation_escalates_past_a_recent_warning(self):
+        warning = self.post_calf_temperature("calf-escalation-1", 40.2)
+        critical = self.post_calf_temperature("calf-escalation-2", 40.8)
+        repeated = self.post_calf_temperature("calf-escalation-3", 40.9)
+
+        self.assertEqual([alert["severity"] for alert in warning.json["alerts"]], ["Warning"])
+        self.assertEqual([alert["severity"] for alert in critical.json["alerts"]], ["Critical"])
+        self.assertEqual(repeated.json["alerts"], [])
+
+    def test_warning_does_not_repeat_a_recent_critical(self):
+        critical = self.post_calf_temperature("calf-downgrade-1", 40.8)
+        warning = self.post_calf_temperature("calf-downgrade-2", 40.2)
+
+        self.assertEqual([alert["severity"] for alert in critical.json["alerts"]], ["Critical"])
+        self.assertEqual(warning.json["alerts"], [])
+
     def test_lists_latest_alerts_for_the_authenticated_device(self):
         self.post_reading(
             reading_payload("calf-list-1", device_id=self.calf_device_id, body_temperature=40.2),
@@ -260,6 +416,20 @@ class AlertsApiTestCase(ApiTestCase):
         self.assertIn(self.calf_device_id, [alert["device_id"] for alert in response.json["alerts"]])
         raised_times = [alert["raised_at"] for alert in response.json["alerts"]]
         self.assertEqual(raised_times, sorted(raised_times, reverse=True))
+
+    def test_failed_temperature_sensor_raises_no_alert_even_with_a_rule(self):
+        response = self.post_reading(
+            reading_payload(
+                "calf-sensor-fault-1",
+                device_id=self.calf_device_id,
+                body_temperature=None,
+                invalid_reasons={"body_temperature": "Sensor did not respond"},
+            ),
+            api_key="calf-test-key",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json["alerts"], [])
 
     def test_alert_listing_requires_an_authenticated_device_and_valid_limit(self):
         url = "/api/v1/monitoring/alerts"

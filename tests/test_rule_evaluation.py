@@ -26,6 +26,18 @@ HALF_SIDE_DEGREES = 0.0005
 MILKING_COW_TEMPERATURE = Threshold(
     uuid.uuid4(), "MilkingCow", MonitoredMetric.BODY_TEMPERATURE, 37.5, 39.5, AlertSeverity.WARNING
 )
+MILKING_COW_HEART_RATE = Threshold(
+    uuid.uuid4(), "MilkingCow", MonitoredMetric.HEART_RATE, 48.0, 84.0, AlertSeverity.WARNING
+)
+MILKING_COW_HEART_RATE_CRITICAL = Threshold(
+    uuid.uuid4(), "MilkingCow", MonitoredMetric.HEART_RATE, 40.0, 90.0, AlertSeverity.CRITICAL
+)
+MILKING_COW_METHANE_WARNING = Threshold(
+    uuid.uuid4(), "MilkingCow", MonitoredMetric.METHANE_INDEX, 0.0, 60.0, AlertSeverity.WARNING
+)
+MILKING_COW_METHANE_CRITICAL = Threshold(
+    uuid.uuid4(), "MilkingCow", MonitoredMetric.METHANE_INDEX, 0.0, 80.0, AlertSeverity.CRITICAL
+)
 
 
 def square_around(latitude, longitude, half_side):
@@ -41,7 +53,7 @@ def longitude_degrees_for_meters(meters, latitude):
     return meters / (EARTH_RADIUS_METERS * cos(radians(latitude)) * pi / 180.0)
 
 
-def reading(temperature=None, activity=None, position=None):
+def reading(temperature=None, activity=None, position=None, heart_rate=None, methane_index=None):
     return TelemetryReading.record(
         SubmittingDevice(DEVICE_ID),
         "event-1",
@@ -50,6 +62,8 @@ def reading(temperature=None, activity=None, position=None):
         activity,
         None,
         position,
+        heart_rate=heart_rate,
+        methane_index=methane_index,
     )
 
 
@@ -94,6 +108,99 @@ class ThresholdEvaluationTestCase(unittest.TestCase):
         )
         self.assertEqual(len(violations), 1)
         self.assertEqual(violations[0].type, AlertType.ACTIVITY)
+
+
+class HeartRateEvaluationTestCase(unittest.TestCase):
+    def setUp(self):
+        self.evaluator = RuleEvaluator()
+        self.milking_cow = DeviceAssignment(DEVICE_ID, None, "MilkingCow")
+        self.rules = rules(thresholds=(MILKING_COW_HEART_RATE,))
+
+    def test_heart_rate_above_threshold_raises_a_heart_rate_violation(self):
+        violations = self.evaluator.evaluate(reading(heart_rate=120.0), self.milking_cow, self.rules)
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].type, AlertType.HEART_RATE)
+        self.assertEqual(violations[0].severity, AlertSeverity.WARNING)
+        self.assertEqual(violations[0].threshold_min_value, 48.0)
+        self.assertEqual(violations[0].threshold_max_value, 84.0)
+
+    def test_heart_rate_inside_threshold_raises_nothing(self):
+        self.assertEqual(self.evaluator.evaluate(reading(heart_rate=70.0), self.milking_cow, self.rules), [])
+
+    def test_reading_without_heart_rate_raises_no_heart_rate_violation(self):
+        self.assertEqual(self.evaluator.evaluate(reading(temperature=38.5), self.milking_cow, self.rules), [])
+
+
+class TwoLevelEvaluationTestCase(unittest.TestCase):
+    def setUp(self):
+        self.evaluator = RuleEvaluator()
+        self.milking_cow = DeviceAssignment(DEVICE_ID, None, "MilkingCow")
+
+    def test_reading_breaking_both_levels_raises_one_critical_violation(self):
+        for ordered in (
+            (MILKING_COW_HEART_RATE, MILKING_COW_HEART_RATE_CRITICAL),
+            (MILKING_COW_HEART_RATE_CRITICAL, MILKING_COW_HEART_RATE),
+        ):
+            with self.subTest(first_listed=ordered[0].severity):
+                violations = self.evaluator.evaluate(
+                    reading(heart_rate=100.0), self.milking_cow, rules(thresholds=ordered)
+                )
+
+                self.assertEqual(len(violations), 1)
+                self.assertEqual(violations[0].severity, AlertSeverity.CRITICAL)
+                self.assertEqual(
+                    (violations[0].threshold_min_value, violations[0].threshold_max_value), (40.0, 90.0)
+                )
+
+    def test_reading_breaking_only_the_warning_raises_a_warning_violation(self):
+        violations = self.evaluator.evaluate(
+            reading(heart_rate=85.0),
+            self.milking_cow,
+            rules(thresholds=(MILKING_COW_HEART_RATE, MILKING_COW_HEART_RATE_CRITICAL)),
+        )
+
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].severity, AlertSeverity.WARNING)
+        self.assertEqual((violations[0].threshold_min_value, violations[0].threshold_max_value), (48.0, 84.0))
+
+
+class MethaneEvaluationTestCase(unittest.TestCase):
+    def setUp(self):
+        self.evaluator = RuleEvaluator()
+        self.milking_cow = DeviceAssignment(DEVICE_ID, None, "MilkingCow")
+        self.rules = rules(thresholds=(MILKING_COW_METHANE_WARNING, MILKING_COW_METHANE_CRITICAL))
+
+    def test_methane_index_above_the_warning_maximum_raises_a_methane_warning(self):
+        violations = self.evaluator.evaluate(reading(methane_index=70.0), self.milking_cow, self.rules)
+
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].type, AlertType.METHANE)
+        self.assertEqual(violations[0].severity, AlertSeverity.WARNING)
+        self.assertEqual((violations[0].threshold_min_value, violations[0].threshold_max_value), (0.0, 60.0))
+
+    def test_methane_index_above_the_critical_maximum_raises_a_methane_critical(self):
+        violations = self.evaluator.evaluate(reading(methane_index=95.0), self.milking_cow, self.rules)
+
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].severity, AlertSeverity.CRITICAL)
+        self.assertEqual(violations[0].threshold_max_value, 80.0)
+
+    def test_methane_index_inside_the_rules_raises_nothing(self):
+        self.assertEqual(self.evaluator.evaluate(reading(methane_index=30.0), self.milking_cow, self.rules), [])
+
+    def test_failed_methane_sensor_is_not_evaluated(self):
+        failed = TelemetryReading.record(
+            SubmittingDevice(DEVICE_ID),
+            "event-2",
+            None,
+            None,
+            None,
+            None,
+            None,
+            {"methane_index": "Gas sensor warming up"},
+        )
+
+        self.assertEqual(self.evaluator.evaluate(failed, self.milking_cow, self.rules), [])
 
 
 class GeofenceEvaluationTestCase(unittest.TestCase):
@@ -163,6 +270,44 @@ class GeofenceEvaluationTestCase(unittest.TestCase):
             rules(thresholds=(threshold,), geofences=(self.geofence,)),
         )
         self.assertEqual([violation.severity for violation in violations], [AlertSeverity.CRITICAL, AlertSeverity.INFORMATIVE])
+
+
+class GeofenceAccuracyTestCase(unittest.TestCase):
+    def setUp(self):
+        self.evaluator = RuleEvaluator()
+        self.assignment = DeviceAssignment(DEVICE_ID, LOT_ID, None)
+        self.geofence = Geofence(
+            uuid.uuid4(),
+            LOT_ID,
+            "South pasture",
+            25,
+            AlertSeverity.CRITICAL,
+            square_around(CENTER_LATITUDE, CENTER_LONGITUDE, HALF_SIDE_DEGREES),
+        )
+        self.rules = rules(geofences=(self.geofence,))
+
+    def evaluate_outside(self, meters_outside, accuracy_meters):
+        longitude = CENTER_LONGITUDE + HALF_SIDE_DEGREES + longitude_degrees_for_meters(
+            meters_outside, CENTER_LATITUDE
+        )
+        position = GeoPosition(CENTER_LATITUDE, longitude, accuracy_meters)
+        return self.evaluator.evaluate(reading(position=position), self.assignment, self.rules)
+
+    def test_position_within_tolerance_with_zero_accuracy_does_not_violate(self):
+        self.assertEqual(self.evaluate_outside(20.0, 0.0), [])
+
+    def test_accuracy_widens_the_tolerance_of_a_position_outside_it(self):
+        self.assertEqual(self.evaluate_outside(40.0, 30.0), [])
+
+    def test_position_beyond_tolerance_plus_accuracy_violates(self):
+        violations = self.evaluate_outside(40.0, 5.0)
+
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].type, AlertType.GEOFENCE)
+        self.assertAlmostEqual(violations[0].distance_to_boundary_meters, 40.0, delta=1.0)
+
+    def test_missing_accuracy_counts_as_zero(self):
+        self.assertEqual(len(self.evaluate_outside(40.0, None)), 1)
 
 
 if __name__ == "__main__":

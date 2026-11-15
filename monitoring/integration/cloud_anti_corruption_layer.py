@@ -1,5 +1,6 @@
 """DDD anti-corruption layer for the Monitoring-to-ICHU-cloud relationship."""
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -10,11 +11,15 @@ from monitoring.domain.entities import MonitoringAlert, MonitoringRuleSet, Telem
 from monitoring.domain.value_objects import (
     AlertSeverity,
     Coordinate,
+    DeviceAssignment,
     Geofence,
+    GeoPosition,
     MonitoredMetric,
     Threshold,
 )
 from monitoring.infrastructure.cloud_client import IchuCloudClient
+
+logger = logging.getLogger(__name__)
 
 
 class IchuCloudAntiCorruptionLayer:
@@ -36,6 +41,16 @@ class IchuCloudAntiCorruptionLayer:
                 "The ICHU cloud API returned an unexpected monitoring rules payload"
             ) from error
 
+    def fetch_assignments(self) -> list[DeviceAssignment]:
+        """Return the collar assignments that the cloud lists for this gateway's ranch."""
+        payload = self._client.fetch_device_assignments()
+        try:
+            return _assignments_from_contract(payload)
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            raise CloudUnavailable(
+                "The ICHU cloud API returned an unexpected device assignments payload"
+            ) from error
+
     def send_batch(
         self, readings: list[TelemetryReading], alerts: list[MonitoringAlert]
     ) -> list[CloudEntryResult]:
@@ -55,6 +70,10 @@ class DisabledCloudAntiCorruptionLayer:
         """Refuse to fetch rules because synchronization is disabled."""
         raise SynchronizationDisabled
 
+    def fetch_assignments(self) -> list[DeviceAssignment]:
+        """Refuse to fetch assignments because synchronization is disabled."""
+        raise SynchronizationDisabled
+
     def send_batch(
         self, readings: list[TelemetryReading], alerts: list[MonitoringAlert]
     ) -> list[CloudEntryResult]:
@@ -68,30 +87,62 @@ def _iso_utc(value: datetime) -> str:
 
 
 def _reading_to_contract(reading: TelemetryReading) -> dict[str, Any]:
-    position = reading.position
+    reasons = reading.invalid_reasons
     return {
         "readingId": str(reading.reading_id),
         "deviceId": reading.device_id,
         "recordedAt": _iso_utc(reading.recorded_at.value),
-        "bodyTemperature": None
-        if reading.body_temperature is None
-        else {"value": reading.body_temperature.celsius, "invalidReason": None},
-        "activityIndex": None
-        if reading.activity_index is None
-        else {"value": reading.activity_index.value, "invalidReason": None},
+        "bodyTemperature": _measurement_to_contract(
+            None if reading.body_temperature is None else reading.body_temperature.celsius,
+            reasons.reason_for("body_temperature"),
+        ),
+        "activityIndex": _measurement_to_contract(
+            None if reading.activity_index is None else reading.activity_index.value,
+            reasons.reason_for("activity_index"),
+        ),
         "ruminationMinutes": None,
-        "batteryLevel": None
-        if reading.battery_level is None
-        else {"value": reading.battery_level.percent, "invalidReason": None},
-        "position": None
-        if position is None
-        else {
+        "batteryLevel": _measurement_to_contract(
+            None if reading.battery_level is None else reading.battery_level.percent,
+            reasons.reason_for("battery_level"),
+        ),
+        "heartRate": _measurement_to_contract(
+            None if reading.heart_rate is None else reading.heart_rate.beats_per_minute,
+            reasons.reason_for("heart_rate"),
+        ),
+        "methaneIndex": _measurement_to_contract(
+            None if reading.methane_index is None else reading.methane_index.value,
+            reasons.reason_for("methane_index"),
+        ),
+        "position": _position_to_contract(reading.position, reasons.reason_for("position")),
+    }
+
+
+def _measurement_to_contract(value: float | None, reason: str | None) -> dict[str, Any] | None:
+    """A failed sensor keeps its envelope so the cloud sees the reason; an absent field is ``None``."""
+    if value is not None:
+        return {"value": value, "invalidReason": None}
+    if reason is not None:
+        return {"value": None, "invalidReason": reason}
+    return None
+
+
+def _position_to_contract(position: GeoPosition | None, reason: str | None) -> dict[str, Any] | None:
+    """A failed fix keeps the cloud's four position keys, with the coordinates and accuracy null."""
+    if position is not None:
+        return {
             "latitude": position.latitude,
             "longitude": position.longitude,
             "accuracyMeters": position.accuracy_meters,
             "invalidReason": None,
-        },
-    }
+        }
+    if reason is not None:
+        return {
+            "latitude": None,
+            "longitude": None,
+            "accuracyMeters": None,
+            "invalidReason": reason,
+        }
+    return None
 
 
 def _alert_to_contract(alert: MonitoringAlert) -> dict[str, Any]:
@@ -132,21 +183,44 @@ def _entry_results_from_contract(response: dict[str, Any]) -> list[CloudEntryRes
     return results
 
 
+def _assignments_from_contract(payload: dict[str, Any]) -> list[DeviceAssignment]:
+    return [
+        DeviceAssignment(
+            str(uuid.UUID(item["deviceId"])),
+            None if item["lotId"] is None else uuid.UUID(item["lotId"]),
+            item["lifeStage"],
+        )
+        for item in payload["assignments"]
+    ]
+
+
 def _rule_set_from_contract(payload: dict[str, Any]) -> MonitoringRuleSet:
     ranch_id = payload.get("ranchId")
+    thresholds = tuple(
+        threshold
+        for threshold in map(_threshold_from_contract, payload["thresholds"])
+        if threshold is not None
+    )
     return MonitoringRuleSet(
         None if ranch_id is None else uuid.UUID(ranch_id),
         int(payload["revision"]),
-        tuple(_threshold_from_contract(item) for item in payload["thresholds"]),
+        thresholds,
         tuple(_geofence_from_contract(item) for item in payload["geofences"]),
     )
 
 
-def _threshold_from_contract(item: dict[str, Any]) -> Threshold:
+def _threshold_from_contract(item: dict[str, Any]) -> Threshold | None:
+    """Return the threshold, or ``None`` for a metric this edge does not monitor yet."""
+    try:
+        metric = MonitoredMetric(item["metric"])
+    except ValueError:
+        # A newer cloud may add metrics; skipping keeps the rest of the rules usable.
+        logger.warning("Skipping threshold for unknown metric %r", item["metric"])
+        return None
     return Threshold(
         uuid.UUID(item["thresholdId"]),
         item["lifeStage"],
-        MonitoredMetric(item["metric"]),
+        metric,
         float(item["minValue"]),
         float(item["maxValue"]),
         AlertSeverity(item["severity"]),

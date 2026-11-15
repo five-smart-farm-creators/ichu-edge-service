@@ -6,6 +6,8 @@
 __pycache__/
 *.py[cod]
 *.db
+*.db-wal
+*.db-shm
 var/
 .pytest_cache/
 /.idea/

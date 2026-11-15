@@ -30,7 +30,7 @@ class PositionRequest(BaseModel):
 
     latitude: float = Field(..., description="Latitude in decimal degrees.")
     longitude: float = Field(..., description="Longitude in decimal degrees.")
-    accuracy_meters: float | None = Field(None, description="Accuracy radius in meters.")
+    accuracy_meters: float = Field(..., ge=0, description="Accuracy radius in meters.")
 
 
 class TelemetryReadingCreateRequest(BaseModel):
@@ -45,6 +45,13 @@ class TelemetryReadingCreateRequest(BaseModel):
     activity_index: float | None = Field(None, description="Activity index.")
     battery_level: float | None = Field(None, description="Battery percentage.")
     position: PositionRequest | None = Field(None, description="GPS position.")
+    invalid_reasons: dict[str, str] | None = Field(
+        None, description="Reasons for failed measurements, keyed by field name."
+    )
+    heart_rate: float | None = Field(None, description="Pulse rate in beats per minute.")
+    methane_index: float | None = Field(
+        None, description="Relative methane index from an uncalibrated sensor, not ppm."
+    )
 
 
 def _iso_utc(value: datetime) -> str:
@@ -64,6 +71,8 @@ def _reading_payload(reading: TelemetryReading) -> dict[str, Any]:
         else reading.body_temperature.celsius,
         "activity_index": None if reading.activity_index is None else reading.activity_index.value,
         "battery_level": None if reading.battery_level is None else reading.battery_level.percent,
+        "heart_rate": None if reading.heart_rate is None else reading.heart_rate.beats_per_minute,
+        "methane_index": None if reading.methane_index is None else reading.methane_index.value,
         "position": None
         if position is None
         else {
@@ -71,6 +80,7 @@ def _reading_payload(reading: TelemetryReading) -> dict[str, Any]:
             "longitude": position.longitude,
             "accuracy_meters": position.accuracy_meters,
         },
+        "invalid_reasons": reading.invalid_reasons.as_dict(),
         "sync_status": reading.sync_status.value,
     }
 
@@ -130,6 +140,9 @@ def create_telemetry_reading():
             reading_request.activity_index,
             reading_request.battery_level,
             position,
+            reading_request.invalid_reasons,
+            reading_request.heart_rate,
+            reading_request.methane_index,
         )
     except DeviceAuthenticationFailed:
         return jsonify({"error": "Invalid device_id or API key"}), 401
@@ -174,7 +187,7 @@ def list_alerts():
 
 @monitoring_api.route("/api/v1/synchronizations", methods=["POST"])
 def synchronize():
-    """Refresh the cached rules and push pending records to the ICHU cloud."""
+    """Refresh the cached rules and assignments, then push pending records to the ICHU cloud."""
     try:
         result = current_app.extensions["synchronization_service"].synchronize()
     except SynchronizationDisabled:
@@ -191,4 +204,6 @@ def synchronize():
         "sentAlerts": result.sent_alerts,
         "synced": result.synced,
         "rejected": result.rejected,
+        "deferred": result.deferred,
+        "assignments": result.assignments,
     }), 200
