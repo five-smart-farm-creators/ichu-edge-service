@@ -18,7 +18,7 @@ The service implements the edge side of the monitoring capability:
 
 - **Implemented**
   - device authentication with `device_id` and `X-API-Key`
-  - ingestion of body temperature, activity index, battery level and GPS position
+  - ingestion of body temperature, activity index, heart rate, methane index, battery level and GPS position
   - idempotent persistence in SQLite with a per-reading synchronization status
   - local alerting from cached thresholds and geofences, with deduplication by severity
   - store-and-forward synchronization of readings and alerts in batches
@@ -29,7 +29,6 @@ The service implements the edge side of the monitoring capability:
   - an operational status endpoint and a local alert listing for the display panel
   - development seeding of devices
 - **Not implemented yet**
-  - water trough controller
   - alert acknowledgement
   - Bluetooth Low Energy (BLE) communication with the collars
 
