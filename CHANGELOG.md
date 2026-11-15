@@ -9,6 +9,10 @@ individually.
 
 ## [Unreleased]
 
+### Removed
+
+- The water trough controller is no longer planned; the edge serves the collar and the alert display panel.
+
 ### Added
 
 - README guide for a local end-to-end demo (collar, edge, backend, and web application) with a
