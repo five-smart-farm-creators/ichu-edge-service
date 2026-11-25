@@ -463,5 +463,54 @@ class AlertsApiTestCase(ApiTestCase):
                 self.assertEqual(response.status_code, 400)
 
 
+class DeviceApiKeyHeaderTestCase(ApiTestCase):
+    AUTH_PATH = "/api/v1/iam/authentications"
+
+    def authenticate_with(self, headers):
+        return self.client.post(
+            self.AUTH_PATH, json={"device_id": MILKING_COW_ID}, headers=headers
+        )
+
+    def test_accepts_key_in_authorization_apikey_scheme(self):
+        for scheme in ("ApiKey", "apikey", "APIKEY"):
+            with self.subTest(scheme=scheme):
+                response = self.authenticate_with({"Authorization": f"{scheme} {DEVICE_KEY}"})
+
+                self.assertEqual(response.status_code, 200)
+
+    def test_x_api_key_takes_precedence_over_authorization(self):
+        valid_x_api_key = self.authenticate_with(
+            {"X-API-Key": DEVICE_KEY, "Authorization": "ApiKey invalid-key"}
+        )
+        invalid_x_api_key = self.authenticate_with(
+            {"X-API-Key": "invalid-key", "Authorization": f"ApiKey {DEVICE_KEY}"}
+        )
+
+        self.assertEqual(valid_x_api_key.status_code, 200)
+        self.assertEqual(invalid_x_api_key.status_code, 401)
+
+    def test_rejects_other_schemes_and_empty_keys(self):
+        for authorization in ("Bearer test-only-key", "Basic test-only-key", "ApiKey", "ApiKey "):
+            with self.subTest(authorization=authorization):
+                response = self.authenticate_with({"Authorization": authorization})
+
+                self.assertEqual(response.status_code, 401)
+                self.assertEqual(response.json, {"error": "Missing X-API-Key"})
+
+    def test_telemetry_and_alert_endpoints_accept_authorization_apikey(self):
+        reading = self.client.post(
+            READINGS_PATH,
+            json=reading_payload("event-authorization-header-1"),
+            headers={"Authorization": f"ApiKey {DEVICE_KEY}"},
+        )
+        alerts = self.client.get(
+            "/api/v1/monitoring/alerts?device_id=bf6c7b5d-5c8a-4ba6-8fcc-6a7b8c9daeb5",
+            headers={"Authorization": f"ApiKey {DEVICE_KEY}"},
+        )
+
+        self.assertEqual(reading.status_code, 201)
+        self.assertEqual(alerts.status_code, 200)
+
+
 if __name__ == "__main__":
     unittest.main()

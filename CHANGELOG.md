@@ -9,6 +9,11 @@ individually.
 
 ## [Unreleased]
 
+### Added
+
+- Device endpoints accept the API key as `Authorization: ApiKey <key>` in addition to `X-API-Key`, so
+  collars that send only the Authorization header can authenticate; `X-API-Key` wins when both are sent.
+
 ## [0.2.0] - 2026-11-14
 
 ### Removed

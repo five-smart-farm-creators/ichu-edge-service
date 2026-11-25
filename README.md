@@ -439,7 +439,7 @@ simulated collar. The panel turns from `NORMAL` to `URGENT` and sounds its buzze
 
 Device-facing payloads use `snake_case`. The status and synchronization responses
 use `camelCase`, as the cloud contract does. Datetimes are ISO 8601 with a `Z`
-suffix. Error bodies have the form `{"error": "<message>"}`.
+suffix. Error bodies have the form `{"error": "<message>"}`. Device endpoints accept the key as `X-API-Key: <key>` or `Authorization: ApiKey <key>`; `X-API-Key` wins when both are sent.
 
 ### Status
 
