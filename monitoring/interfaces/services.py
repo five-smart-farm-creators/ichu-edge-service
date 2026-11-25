@@ -15,6 +15,7 @@ from monitoring.application.errors import (
 from monitoring.domain.entities import MonitoringAlert, TelemetryReading
 from monitoring.domain.errors import TelemetryEventConflict
 from monitoring.domain.value_objects import GeoPosition
+from shared.interfaces.device_credentials import device_api_key_from_headers
 
 monitoring_api = Blueprint("monitoring_api", __name__)
 
@@ -119,7 +120,7 @@ def create_telemetry_reading():
     except ValidationError:
         return jsonify({"error": "Invalid telemetry reading request"}), 400
 
-    api_key = request.headers.get("X-API-Key")
+    api_key = device_api_key_from_headers(request.headers)
     if not api_key:
         return jsonify({"error": "Missing X-API-Key"}), 401
 
@@ -165,7 +166,7 @@ def list_alerts():
     device_id = request.args.get("device_id")
     if not device_id:
         return jsonify({"error": "Missing device_id"}), 401
-    api_key = request.headers.get("X-API-Key")
+    api_key = device_api_key_from_headers(request.headers)
     if not api_key:
         return jsonify({"error": "Missing X-API-Key"}), 401
     authenticated = current_app.extensions[

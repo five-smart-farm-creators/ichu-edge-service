@@ -3,6 +3,8 @@
 from flask import Blueprint, current_app, jsonify, request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from shared.interfaces.device_credentials import device_api_key_from_headers
+
 iam_api = Blueprint("iam_api", __name__)
 
 
@@ -29,7 +31,7 @@ def authenticate_device():
     except ValidationError:
         return jsonify({"error": "Invalid authentication request"}), 400
 
-    api_key = request.headers.get("X-API-Key")
+    api_key = device_api_key_from_headers(request.headers)
     if not api_key:
         return jsonify({"error": "Missing X-API-Key"}), 401
 
